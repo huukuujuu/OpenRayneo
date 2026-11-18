@@ -36,7 +36,8 @@
   "dshGo": {
     "v": 1,
     "title": {
-      "zh": "OpenRayneo 眼镜",
+      "zh": "OpenRayneo 안경",
+      "ko": "OpenRayneo 안경",
       "en": "OpenRayneo glasses"
     },
     "icon": "link",
@@ -49,7 +50,8 @@
         {
           "id": "connect",
           "label": {
-            "zh": "连接眼镜",
+            "zh": "안경 연결",
+            "ko": "안경 연결",
             "en": "Connect"
           },
           "icon": "link"
@@ -57,7 +59,8 @@
         {
           "id": "status",
           "label": {
-            "zh": "眼镜状态",
+            "zh": "안경 상태",
+            "ko": "안경 상태",
             "en": "Glasses"
           },
           "icon": "info"
@@ -67,7 +70,8 @@
         {
           "id": "send-glasses",
           "label": {
-            "zh": "发到眼镜",
+            "zh": "안경으로 보내기",
+            "ko": "안경으로 보내기",
             "en": "To glasses"
           },
           "icon": "send"
@@ -75,7 +79,8 @@
         {
           "id": "clear-glasses",
           "label": {
-            "zh": "清空眼镜",
+            "zh": "안경 비우기",
+            "ko": "안경 비우기",
             "en": "Clear"
           },
           "icon": "delete"

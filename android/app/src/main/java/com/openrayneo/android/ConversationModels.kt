@@ -6,6 +6,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+/** Speaker labels written into existing records; the stored strings stay as-is so old records still match. */
+const val UNKNOWN_SPEAKER = "未知"
+const val SELF_SPEAKER = "本人"
+const val MIXED_SPEAKER = "混合"
+const val MANUAL_REASON = "수동 지정"
+private const val LEGACY_MANUAL_REASON = "手动标注"
+private const val LEGACY_STATEMENT = "陈述"
+private val storedLabels = listOf(SELF_SPEAKER to "본인", MIXED_SPEAKER to "혼합", UNKNOWN_SPEAKER to "알 수 없음", LEGACY_STATEMENT to "진술", LEGACY_MANUAL_REASON to MANUAL_REASON)
+
+/** Korean text for speaker labels, memory kinds and match reasons saved by older builds. */
+fun displayLabel(raw: String) = storedLabels.fold(raw) { text, (stored, shown) -> text.replace(stored, shown) }
+
 internal enum class ConversationMode(val title: String) { DAILY("일상"), MEETING("회의"), ENROLL("목소리 등록") }
 internal enum class ConversationSource(val title: String) { REALTIME("실시간 듀얼 마이크"), NATIVE("음성 깨우기"), ALWAYS_ON("종일 기록") }
 internal data class VoiceMatch(val personId: String, val score: Float) {
@@ -58,7 +70,7 @@ internal data class RecordSummary(val kind: String, val text: String, val create
 }
 internal data class SpeechSegment(
     val id: String, val beginMS: Long, val endMS: Long, val text: String,
-    val speaker: String = "未知", val personId: String? = null, val matchScore: Float? = null,
+    val speaker: String = UNKNOWN_SPEAKER, val personId: String? = null, val matchScore: Float? = null,
     val stable: Boolean = false, val mixed: Boolean = false, val revision: Int = 0,
     val receivedAt: Long = System.currentTimeMillis(), val roundId: String? = null,
     val candidates: List<VoiceMatch> = emptyList(), val matchReason: String = "", val words: List<SpeechWord> = emptyList(), val timelineAt: Long = 0, val timeBasis: String = "received", val processingMode: String = "live", val timelineEndAt: Long = 0, val sourceChannel: Int = 1, val identityBasis: String = "unknown",
@@ -69,24 +81,24 @@ internal data class SpeechSegment(
         .put("candidates", JSONArray(candidates.map { it.json() })).put("matchReason", matchReason).put("words", JSONArray(words.map { it.json() })).put("timelineAt", timelineAt).put("timeBasis", timeBasis).put("processingMode", processingMode).put("timelineEndAt", timelineEndAt).put("sourceChannel", sourceChannel).put("identityBasis", identityBasis)
     companion object {
         fun parse(v: JSONObject) = SpeechSegment(v.getString("id"), v.getLong("beginMS"), v.getLong("endMS"), v.getString("text"),
-            v.optString("speaker", "未知"), v.optString("personId").takeIf { it.isNotBlank() && it != "null" },
+            v.optString("speaker", UNKNOWN_SPEAKER), v.optString("personId").takeIf { it.isNotBlank() && it != "null" },
             if (v.has("matchScore") && !v.isNull("matchScore")) v.getDouble("matchScore").toFloat() else null,
             v.optBoolean("stable"), v.optBoolean("mixed"), v.optInt("revision"), v.optLong("receivedAt"), v.optString("roundId").takeUnless { it.isBlank() || it == "null" },
             v.optJSONArray("candidates")?.let { a -> List(a.length()) { a.getJSONObject(it).let { c -> VoiceMatch(c.getString("personId"), c.getDouble("score").toFloat()) } } } ?: emptyList(), v.optString("matchReason"),
-            v.optJSONArray("words")?.let { a -> List(a.length()) { SpeechWord.parse(a.getJSONObject(it)) } } ?: emptyList(), v.optLong("timelineAt"), v.optString("timeBasis", "legacy-estimate"), v.optString("processingMode", "live"), v.optLong("timelineEndAt"), v.optInt("sourceChannel", 1), v.optString("identityBasis", if (v.optString("matchReason") == "手动标注") "manual" else if (v.optBoolean("mixed")) "mixed" else if (!v.isNull("personId") && v.optString("personId").isNotBlank()) "voiceprint" else "unknown"))
+            v.optJSONArray("words")?.let { a -> List(a.length()) { SpeechWord.parse(a.getJSONObject(it)) } } ?: emptyList(), v.optLong("timelineAt"), v.optString("timeBasis", "legacy-estimate"), v.optString("processingMode", "live"), v.optLong("timelineEndAt"), v.optInt("sourceChannel", 1), v.optString("identityBasis", if (v.optString("matchReason") in setOf(LEGACY_MANUAL_REASON, MANUAL_REASON)) "manual" else if (v.optBoolean("mixed")) "mixed" else if (!v.isNull("personId") && v.optString("personId").isNotBlank()) "voiceprint" else "unknown"))
     }
 }
 internal data class AttributedMemory(
     val id: String = UUID.randomUUID().toString(), val sourceIds: List<String>,
     val speakerId: String?, val subjectId: String?, val subject: String,
-    val text: String, val kind: String = "陈述", val updatedAt: Long = System.currentTimeMillis(),
+    val text: String, val kind: String = "진술", val updatedAt: Long = System.currentTimeMillis(),
 ) {
     fun json() = JSONObject().put("id", id).put("sourceIds", JSONArray(sourceIds)).put("speakerId", speakerId)
         .put("subjectId", subjectId).put("subject", subject).put("text", text).put("kind", kind).put("updatedAt", updatedAt)
     companion object {
         fun parse(v: JSONObject) = AttributedMemory(v.getString("id"), v.getJSONArray("sourceIds").let { a -> List(a.length()) { a.getString(it) } },
             v.optString("speakerId").takeUnless { it.isBlank() || it == "null" }, v.optString("subjectId").takeUnless { it.isBlank() || it == "null" },
-            v.getString("subject"), v.getString("text"), v.optString("kind", "陈述"), v.getLong("updatedAt"))
+            v.getString("subject"), v.getString("text"), v.optString("kind", "진술"), v.getLong("updatedAt"))
     }
 }
 internal data class ConversationRecord(

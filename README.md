@@ -2,35 +2,35 @@
 
 <img src="docs/assets/openrayneo-logo.png" alt="OpenRayneo" width="120" />
 
-RayNeo iO 眼镜的 Android 伴侣。引出眼镜已有能力，完成采集、基础处理、记录与本机 Agent 接入，侧重日常易用与全天记录。
+RayNeo iO 안경용 Android 동반 앱이다. 안경에 이미 있는 기능을 끌어내 수음, 기본 처리, 기록, 로컬 Agent 연동을 하며, 일상에서 쓰기 쉬운 것과 종일 기록에 중점을 둔다.
 
-`android-only` 分支只保留 Android 应用与 DSH 插件；macOS Bridge、音频驱动、Mac API 技能和宣传片源码留在 `main` 历史中，本分支不再构建或维护。
+`android-only` 브랜치에는 Android 앱과 DSH 플러그인만 있다. macOS Bridge, 오디오 드라이버, Mac API 스킬, 홍보 영상 소스는 `main` 이력에 남아 있으며 이 브랜치에서는 더 이상 빌드하거나 관리하지 않는다.
 
-## 架构是项目主文档
+## 아키텍처가 주 문서다
 
-- [架构看板](.arch/dashboard.html)：由 `.arch/graph.json` 生成的当前节点与契约（图中 Mac 节点为历史记录）。
-- [事实、当前实现与未解决问题](.arch/ground_truth.md)：开发和验收的当前基线。
-- [北极星](.arch/SEED.md)与[废弃方案](.arch/graveyard.md)：目标与取舍依据。
-- [开发约定](AGENTS.md)：维护架构、代码和精简文档的规则。
+- [아키텍처 대시보드](.arch/dashboard.html): `.arch/graph.json`에서 만든 현재 노드와 계약(그래프의 Mac 노드는 이력 기록).
+- [사실, 현재 구현, 미해결 문제](.arch/ground_truth.md): 개발과 검수의 현재 기준선.
+- [북극성](.arch/SEED.md)과 [폐기한 방안](.arch/graveyard.md): 목표와 선택의 근거.
+- [개발 규칙](AGENTS.md): 아키텍처, 코드, 최소 문서를 관리하는 규칙.
 
-在仓库根目录使用 `arch-grower`：
+저장소 루트에서 `arch-grower`를 쓴다.
 
 ```sh
 uv run ~/.agents/skills/arch-grower/scripts/arch_cli.py focus --node speaker_channel_policy
 uv run ~/.agents/skills/arch-grower/scripts/arch_cli.py export-ui --out .arch/dashboard.html
 ```
 
-架构图通过 CLI 更新。节点决策、当前实现、已验证结果和未解问题分别维护；新的工作更新现有事实与节点。
+아키텍처 그래프는 CLI로 갱신한다. 노드 결정, 현재 구현, 검증 결과, 미해결 문제를 따로 관리하며, 새 작업은 기존 사실과 노드를 갱신한다.
 
-## 仅保留必要的操作与合同
+## 꼭 필요한 운영 문서와 계약만 둔다
 
-| 需要做什么 | 入口 |
+| 하려는 일 | 문서 |
 | --- | --- |
-| 安装、构建、连接、DSH、声音调试与故障恢复 | [运行指南](docs/runbook.md) |
-| 设备帧、认证、控制生命周期与逆向证据索引 | [核心协议](docs/protocol.md) |
-| 手机记录同步服务、游标、派生写回 | [同步契约](docs/record-sync-contract.md) |
-| 手机本机 DSH Agent 插件 | [插件说明](integrations/dsh-go/README.md) |
+| 설치, 빌드, 연결, DSH, 음성 디버그, 장애 복구 | [운영 가이드](docs/runbook.md) |
+| 기기 프레임, 인증, 제어 생명주기, 역분석 증거 색인 | [핵심 프로토콜](docs/protocol.md) |
+| 휴대폰 기록 동기화 서비스, 커서, 파생 회신 | [동기화 계약](docs/record-sync-contract.md) |
+| 휴대폰 로컬 DSH Agent 플러그인 | [플러그인 설명](integrations/dsh-go/README.md) |
 
-当前候选包和质量问题见[实现快照](.arch/ground_truth.md#当前实现与未解决问题)。官方账号／官方云服务分支在当前 Beta 停用；眼镜固件及官方已具备的功能构成设备能力边界。
+현재 후보 패키지와 품질 문제는 [구현 스냅숏](.arch/ground_truth.md#현재-구현과-미해결-문제)을 본다. 공식 계정/공식 클라우드 서비스 분기는 현재 Beta에서 꺼져 있으며, 안경 펌웨어와 공식 앱이 이미 가진 기능이 기기 능력의 경계다.
 
-[Apache License 2.0](LICENSE)。本项目独立于 RayNeo；官方 APK、固件、用户录音与凭据不随源码分发。
+[Apache License 2.0](LICENSE). 이 프로젝트는 RayNeo와 무관하며, 공식 APK, 펌웨어, 사용자 녹음, 자격 증명은 소스와 함께 배포하지 않는다.

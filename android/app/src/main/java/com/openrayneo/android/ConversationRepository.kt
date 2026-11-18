@@ -87,7 +87,7 @@ internal class ConversationRepository(context: Context) {
         val old = records.first { it.id == recordId }
         val person = people.firstOrNull { it.id == personId }
         val changed = old.segments.map { if (it.id in segmentIds) it.copy(personId = person?.id,
-            stable = true, mixed = false, matchScore = null, candidates = emptyList(), matchReason = "手动标注", identityBasis = "manual", revision = it.revision + 1) else it }
+            stable = true, mixed = false, matchScore = null, candidates = emptyList(), matchReason = MANUAL_REASON, identityBasis = "manual", revision = it.revision + 1) else it }
         save(old.copy(segments = changed, summaryStale = true, summaries = old.summaries.map { it.copy(stale = true) }))
         // Day summaries may include multiple source records.
         records.filter { row -> row.id != recordId && row.summaries.any { recordId in it.recordIds } }.forEach { row ->

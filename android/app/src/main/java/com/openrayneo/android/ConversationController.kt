@@ -310,12 +310,12 @@ internal class ConversationController(private val context: Context, private val 
             val precise = sentence.words.isNotEmpty() && sentence.words.joinToString("") { it.text } == sentence.text && sentence.words.all { it.endMS > it.beginMS }
             val units = if (precise) sentence.words.mapIndexed { i, word -> sentence.copy(id = "${sentence.id}:$i", text = word.text, beginMS = word.beginMS, endMS = word.endMS, words = listOf(word)) } else listOf(sentence)
             units.forEach { unit ->
-                val match = if (channelSelf) SpeakerEngine.Assignment(speaker = "c1:本人", personId = self!!.id, stable = true, reason = "2채널 정책: 채널 1은 기본 본인")
+                val match = if (channelSelf) SpeakerEngine.Assignment(speaker = "c1:$SELF_SPEAKER", personId = self!!.id, stable = true, reason = "2채널 정책: 채널 1은 기본 본인")
                     else engine(channel).assignment(unit.beginMS, unit.endMS, wordLevel = precise)
                 val manual = manualSpeakers[match.speaker]
                 val person = manual ?: match.personId ?: record!!.speakerPeople[match.speaker].takeIf { match.stable && !match.mixed }
                 val basis = when { manual != null -> "manual"; channelSelf -> "channel1_default_self"; match.mixed -> "mixed"; person != null -> "voiceprint"; else -> "unknown" }
-                val attributed = unit.copy(speaker = if (match.mixed) "c$channel:混合" else match.speaker, personId = if (match.mixed) null else person,
+                val attributed = unit.copy(speaker = if (match.mixed) "c$channel:$MIXED_SPEAKER" else match.speaker, personId = if (match.mixed) null else person,
                     stable = match.stable, mixed = match.mixed, candidates = match.candidates, matchScore = match.score, matchReason = match.reason, identityBasis = basis,
                     timelineAt = record!!.timelineAt(unit.beginMS), timelineEndAt = record!!.timelineAt((unit.endMS - 1).coerceAtLeast(unit.beginMS)) + 1,
                     timeBasis = if (record!!.audioAnchors.isEmpty()) "legacy-estimate" else "received", processingMode = if (replaying || liveBackfill) "backfill" else "live")

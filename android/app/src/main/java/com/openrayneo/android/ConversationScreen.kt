@@ -156,7 +156,7 @@ internal fun ConversationScreen(model: AppModel, actions: UiActions, open: (Stri
 private fun SpeechRow(segment: SpeechSegment, people: List<VoicePerson>, record: ConversationRecord? = null, action: (() -> Unit)? = null) {
     OutlinedCard(Modifier.fillMaxWidth().then(if (action != null) Modifier.clickable(onClick = action) else Modifier)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            val name = people.firstOrNull { it.id == segment.personId }?.name ?: if (segment.speaker == "未知") "알 수 없는 화자" else "화자 ${segment.speaker}"
+            val name = people.firstOrNull { it.id == segment.personId }?.name ?: if (segment.speaker == UNKNOWN_SPEAKER) "알 수 없는 화자" else "화자 ${displayLabel(segment.speaker)}"
             val start = record?.timeOf(segment) ?: segment.timelineAt.takeIf { it > 0 }
             val end = record?.endTimeOf(segment) ?: segment.timelineEndAt.takeIf { it > 0 }
             val clock = SimpleDateFormat("HH:mm:ss", Locale.CHINA)
@@ -169,7 +169,7 @@ private fun SpeechRow(segment: SpeechSegment, people: List<VoicePerson>, record:
                     "${people.firstOrNull { it.id == match.personId }?.name ?: "삭제된 인물"} ${"%.2f".format(match.score)}"
                 })
             } else segment.matchScore?.let { Note("목소리 유사도 ${"%.2f".format(it)}") }
-            if (segment.matchReason.isNotBlank()) Note(segment.matchReason)
+            if (segment.matchReason.isNotBlank()) Note(displayLabel(segment.matchReason))
             Text(segment.text)
         }
     }
@@ -222,7 +222,7 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
                 val segment = record.segments.firstOrNull { it.speaker == label }
                     ?: SpeechSegment("voice:$label", 0, 0, "이번 세션에서 자동 추출: ${samples.size}개 음성 특징", speaker = label, personId = record.speakerPeople[label])
                 TextButton(onClick = { speakerEdit = segment }) {
-                    Text("화자 $label · ${state.people.firstOrNull { it.id == segment.personId }?.name ?: "라벨 대기"} · ${samples.size}개 샘플")
+                    Text("화자 ${displayLabel(label)} · ${state.people.firstOrNull { it.id == segment.personId }?.name ?: "라벨 대기"} · ${samples.size}개 샘플")
                 }
             }
         }
@@ -230,7 +230,7 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
         items(record.memories, key = { it.id }) { memory ->
             OutlinedCard(Modifier.fillMaxWidth().clickable { memoryEdit = memory }) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("${memory.subject} · ${memory.kind}", style = MaterialTheme.typography.titleSmall)
+                    Text("${memory.subject} · ${displayLabel(memory.kind)}", style = MaterialTheme.typography.titleSmall)
                     Text(memory.text)
                     memory.sourceIds.forEach { id -> record.segments.firstOrNull { it.id == id }?.let { source -> Note("원문: ${source.text}") } }
                 }
@@ -241,7 +241,7 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FilterChip(filter == null, { filter = null }, label = { Text("전체") })
                 record.segments.map { it.speaker }.distinct().take(6).forEach { name ->
-                    FilterChip(filter == name, { filter = name }, label = { Text(name) })
+                    FilterChip(filter == name, { filter = name }, label = { Text(displayLabel(name)) })
                 }
             }
         }
@@ -278,15 +278,15 @@ private fun SpeakerBindingDialog(model: AppModel, record: ConversationRecord, se
     }
     var personId by remember { mutableStateOf(segment.personId ?: record.speakerPeople[segment.speaker]) }
     var name by remember { mutableStateOf("") }
-    var all by remember { mutableStateOf(segment.speaker != "未知") }
+    var all by remember { mutableStateOf(segment.speaker != UNKNOWN_SPEAKER) }
     var rememberVoice by remember { mutableStateOf(record.speakerSamples[segment.speaker]?.isNotEmpty() == true) }
     val picked = model.selectedContact
     LaunchedEffect(picked) { if (picked != null) { name = picked.name; personId = null } }
-    AlertDialog(onDismissRequest = dismiss, title = { Text("화자 ${segment.speaker}") }, text = {
+    AlertDialog(onDismissRequest = dismiss, title = { Text("화자 ${displayLabel(segment.speaker)}") }, text = {
         Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Note(segment.text)
             TextButton(onClick = { history = true }) { Text("과거 발화를 선택해 일괄 수정") }
-            Row { Checkbox(all, { all = it }, enabled = segment.speaker != "未知"); Text("이번 기록의 같은 화자에게 적용") }
+            Row { Checkbox(all, { all = it }, enabled = segment.speaker != UNKNOWN_SPEAKER); Text("이번 기록의 같은 화자에게 적용") }
             people.forEach { person ->
                 Row(Modifier.fillMaxWidth().clickable { personId = person.id }) {
                     RadioButton(personId == person.id, { personId = person.id }); Text(person.name)

@@ -42,7 +42,7 @@ internal class ConversationSummarizer {
                 val speakerIds = ids.map { sources[it]?.personId }.distinct()
                 val subjectId = item.optString("subject_id").takeIf { id -> people.any { it.id == id } }
                 AttributedMemory(sourceIds = ids, speakerId = speakerIds.singleOrNull(), subjectId = subjectId,
-                    subject = item.getString("subject"), text = item.getString("text"), kind = item.optString("kind", "陈述"))
+                    subject = item.getString("subject"), text = item.getString("text"), kind = item.optString("kind", "진술"))
             }
             record.copy(memories = facts, summary = result.getString("summary"), summaryStale = false)
         }

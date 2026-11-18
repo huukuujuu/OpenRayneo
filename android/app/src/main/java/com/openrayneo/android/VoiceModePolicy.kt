@@ -26,7 +26,7 @@ internal class VoiceModePolicy(context: Context) {
                 val speaker = when {
                     segment.identityBasis == "channel1_default_self" -> "본인(채널1 기본값)"
                     person != null -> person.name + if (!segment.stable) "(추정)" else ""
-                    segment.speaker.isNotBlank() && segment.speaker != "未知" -> segment.speaker
+                    segment.speaker.isNotBlank() && segment.speaker != UNKNOWN_SPEAKER -> segment.speaker
                     else -> null
                 }
                 val age = (now - (segment.timelineAt.takeIf { it > 0 } ?: segment.receivedAt)).coerceAtLeast(0) / 1000

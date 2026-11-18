@@ -14,7 +14,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
     companion object { const val MODEL = "campplus-zh-16k-common/sherpa-2.0.1" }
     data class Evidence(val beginMS: Long, val endMS: Long, val speaker: String,
                         val personId: String?, val score: Float?, val mixed: Boolean, val embedding: FloatArray?)
-    data class Assignment(val speaker: String = "未知", val personId: String? = null,
+    data class Assignment(val speaker: String = UNKNOWN_SPEAKER, val personId: String? = null,
                           val score: Float? = null, val stable: Boolean = false, val mixed: Boolean = false,
                           val candidates: List<VoiceMatch> = emptyList(), val reason: String = "아직 충분히 선명한 음성을 얻지 못함")
     private data class Cluster(val label: String, val samples: MutableList<FloatArray>, var lastSeenMS: Long)
@@ -74,7 +74,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
             vad.pop()
             if (enrolling) {
                 if (samples.size < 12_800) {
-                    evidence += Evidence(begin, end, "未知", null, null, false, null)
+                    evidence += Evidence(begin, end, UNKNOWN_SPEAKER, null, null, false, null)
                     classified(begin, end); continue
                 }
                 // Guided, single-speaker registration: use VAD utterances directly. Meeting
@@ -84,7 +84,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
                     val last = minOf(first + 48000, samples.size)
                     if (last - first < 12800) continue
                     val vector = embedding(samples.copyOfRange(first, last)) ?: continue
-                    evidence += Evidence(begin + first * 1000L / 16000, begin + last * 1000L / 16000, "登记", null, null, false, vector)
+                    evidence += Evidence(begin + first * 1000L / 16000, begin + last * 1000L / 16000, "등록", null, null, false, vector)
                 }
                 evidence.removeAll { it.endMS < end - 60_000 }
                 if (evidence.size > 30) evidence.subList(0, evidence.size - 30).clear()
@@ -121,7 +121,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
                 val match = if (mixed) null else matches[speaker]
                 evidence += Evidence(offsetMS + (speech.start.toLong() + region.first) * 1000 / 16000,
                     offsetMS + (speech.start.toLong() + region.last) * 1000 / 16000,
-                    if (mixed) "未知" else labels.getValue(speaker), match?.first, match?.second, mixed,
+                    if (mixed) UNKNOWN_SPEAKER else labels.getValue(speaker), match?.first, match?.second, mixed,
                     if (mixed) null else vectors[speaker])
             }
             if (!keepHistory) { evidence.removeAll { it.endMS < end - 120_000 }; clusters.removeAll { it.lastSeenMS < end - 120_000 } }
@@ -159,12 +159,12 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
         val covered = evidence.filter { min(it.endMS, endMS) > max(it.beginMS, beginMS) }
         if (covered.isEmpty()) return Assignment()
         fun duration(e: Evidence) = (min(e.endMS, endMS) - max(e.beginMS, beginMS)).coerceAtLeast(0)
-        val mixed = covered.any { it.mixed } || (!wordLevel && covered.map { it.speaker }.filter { it != "未知" }.distinct().size > 1)
+        val mixed = covered.any { it.mixed } || (!wordLevel && covered.map { it.speaker }.filter { it != UNKNOWN_SPEAKER }.distinct().size > 1)
         val total = covered.sumOf(::duration).coerceAtLeast(1)
         val speaker = covered.groupBy { it.speaker }.maxBy { (_, list) -> list.sumOf(::duration) }
         // ASR timestamps include pauses. Identity coverage is measured over voiced evidence,
         // otherwise a clearly matched voice is discarded just because a sentence has silence.
-        val stable = !mixed && speaker.key != "未知" && speaker.value.sumOf(::duration).toDouble() / total >= 0.85 && (wordLevel || total >= 700)
+        val stable = !mixed && speaker.key != UNKNOWN_SPEAKER && speaker.value.sumOf(::duration).toDouble() / total >= 0.85 && (wordLevel || total >= 700)
         val ranked = speaker.value.filter { !it.mixed && it.embedding != null }.flatMap { e ->
             candidates(e.embedding!!).map { it to duration(e) }
         }.groupBy { it.first.personId }.map { (id, votes) ->
@@ -187,7 +187,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
     }
     fun enrollment(): VoiceEnrollment.Assessment = VoiceEnrollment.assess(evidence.filter { !it.mixed && it.embedding != null }
         .map { VoiceEnrollment.Sample(it.beginMS, it.endMS, it.embedding!!) })
-    fun speakerSamples(): Map<String, List<FloatArray>> = evidence.filter { !it.mixed && it.embedding != null && it.speaker != "未知" }
+    fun speakerSamples(): Map<String, List<FloatArray>> = evidence.filter { !it.mixed && it.embedding != null && it.speaker != UNKNOWN_SPEAKER }
         .groupBy { it.speaker }.mapValues { (_, turns) -> turns.sortedByDescending { it.endMS - it.beginMS }.take(5).map { it.embedding!! } }
     fun close() { vad.release(); diarizer.release(); extractor.release() }
     private fun cosine(a: FloatArray, b: FloatArray): Float {

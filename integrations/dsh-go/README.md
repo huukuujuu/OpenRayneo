@@ -18,8 +18,8 @@ The npm archive has a top-level `package/`; use `--strip-components=1` when extr
 Update the companion APK and restart the DSH engine after replacing plugin code.
 Existing connection credentials and saved phone records remain.
 
-In OpenRayneo enable **DSH Go 与外部 Agent → 本机 Agent 入口**, then copy its address and token.
-In DSH Go tap **Connect / 连接眼镜** and allow clipboard access.
+In OpenRayneo enable **DSH Go 및 외부 Agent → 로컬 Agent 엔드포인트 켜기**, then copy its address and token.
+In DSH Go tap **Connect / 안경 연결** and allow clipboard access.
 The plugin stores the token as the `OPENRAYNEO_TOKEN` credential; clipboard content stays out of prompts.
 The default local URL is `http://127.0.0.1:8766`; set the actual Service URL for a custom port.
 Keep both phone apps allowed to run in the background.
@@ -39,10 +39,10 @@ Raw audio, voice embeddings, model API keys and vendor-cloud credentials are not
 
 Completed ASR and speaker results are delivered together, including unknown or mixed segments.
 The encrypted phone outbox preserves pending inputs while DSH is unavailable and answers until delivery.
-Live **小雷小雷** inputs reuse one DSH conversation across wake, record and task IDs.
+Live native wake-word inputs reuse one DSH conversation across wake, record and task IDs.
 The persisted binding is scoped by phone installation, native conversation key and selected Agent preset.
 Stable native keys require Android36 or newer; other sources and historical backfill retain separate sessions.
-Phone **助手 → 新建对话** rotates the native key and clears local short context without deleting records.
+Phone **어시스턴트 → 새 대화** rotates the native key and clears local short context without deleting records.
 Changing the Agent preset chooses its own binding; stale replies cannot enter a new conversation.
 
 The reply uses the current native wake/realtime SID when valid, otherwise a glasses notification.

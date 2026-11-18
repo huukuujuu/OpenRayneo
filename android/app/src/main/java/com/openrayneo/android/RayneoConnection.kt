@@ -393,7 +393,7 @@ internal class RayneoConnection(private val context: Context, private val listen
      */
     fun sendTestNotification() {
         sendNotification("Test 1 (EN)", "Hello RayNeo glasses. English only.")
-        main.postDelayed({ if (ready) sendNotification("测试 2 (中文)", "安卓直连验证：你好，雷鸟眼镜。") }, 2_000)
+        main.postDelayed({ if (ready) sendNotification("테스트 2 (한국어)", "안드로이드 직결 확인: 안녕하세요, RayNeo 안경.") }, 2_000)
         main.postDelayed({ if (ready) sendNotification("Test 3 (KO)", "한국어 테스트: 안녕하세요, RayNeo 안경.") }, 4_000)
     }
 

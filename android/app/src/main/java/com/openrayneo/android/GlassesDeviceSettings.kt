@@ -61,11 +61,11 @@ internal class GlassesDeviceSettings(private val requests: GlassesRequests, priv
     fun voiceWake(enabled: Boolean) = apply("set_ai_voice_wakeup", 16, 17, payload(mode = if (enabled) 1 else 0), "voiceAssistantConfig") {
         it.settings.optJSONObject("voiceAssistantConfig")?.deviceFlag("voiceWakeup") == enabled
     }
-    /** Firmware barge-in ("对话打断"): while the assistant answers, speaking cuts it off and starts a new turn. */
+    /** Firmware barge-in ("대화 끊기"): while the assistant answers, speaking cuts it off and starts a new turn. */
     fun interrupt(enabled: Boolean) = apply("set_ai_work_mode", 16, 17, payload(mode = if (enabled) 1 else 0), "voiceAssistantConfig") {
         it.settings.optJSONObject("voiceAssistantConfig")?.deviceFlag("workMode") == enabled
     }
-    /** Firmware wake word: 1 = 小雷小雷 (Chinese), 2 = English wake word. */
+    /** Firmware wake word: 1 = Chinese wake word "Xiao Lei Xiao Lei", 2 = English wake word. */
     fun wakeWord(word: Int) {
         require(word in 1..2)
         apply("set_ai_wakeup_word", 16, 17, payload(mode = word), "voiceAssistantConfig") {
