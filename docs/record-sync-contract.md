@@ -2,7 +2,7 @@
 
 手机是记录、转写、总结和人物档案的权威端；Mac 保存持久副本及 Agent 派生项离线队列。
 配置手机地址与专用凭据后，Mac 每 15 秒尝试同步；断网时仍可读取副本、写笔记，下次继续交换。
-设备线协议见 [protocol](protocol.md)；精确本机路由见 [API 参考](../.agents/skills/openrayneo-api/references/api.md)。
+设备线协议见 [protocol](protocol.md)；精确本机路由见 [API 参考](https://github.com/huukuujuu/OpenRayneo/blob/a914718/.agents/skills/openrayneo-api/references/api.md)。
 
 ## 1. 监听面与权限
 
@@ -170,4 +170,4 @@ Mac 记录级查询用 `[createdAt,endedAt)` 与 `[from,to)` 半开区间交集�
 - 字段及双时间：[ConversationModels.kt](../android/app/src/main/java/com/openrayneo/android/ConversationModels.kt)。
 - 原音频块/seek/recover/WAV：[MeetingAudioStore.kt](../android/app/src/main/java/com/openrayneo/android/MeetingAudioStore.kt)。
 - 补齐和独立 lane 游标：[ConversationController.kt](../android/app/src/main/java/com/openrayneo/android/ConversationController.kt)。
-- Mac 原子副本、派生 outbox 与 peer 队列：[RecordSyncController.swift](../Sources/OpenRayneoBridge/RecordSyncController.swift)。
+- Mac 原子副本、派生 outbox 与 peer 队列：[RecordSyncController.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/RecordSyncController.swift)。

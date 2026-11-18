@@ -1,7 +1,10 @@
 # 设备协议合同
 
 本页保留当前 OpenRayneo 设备链路所依赖的线协议、生命周期和恢复规则。
-HTTP 路由及参数以 [本机 API 参考](../.agents/skills/openrayneo-api/references/api.md) 为准；
+
+> `android-only` 分支：文中 Swift 实现与 Mac API 链接固定指向删除前提交 `a914718`，仅作协议证据；Android 实现位于 `android/app/src/main/java/com/openrayneo/android/`。
+
+HTTP 路由及参数以 [本机 API 参考](https://github.com/huukuujuu/OpenRayneo/blob/a914718/.agents/skills/openrayneo-api/references/api.md) 为准；
 手机与 Mac 的数据交换见 [记录同步合同](record-sync-contract.md)，运行方式见 [runbook](runbook.md)。
 项目计划与当前问题在 `.arch`，本页不保存构建流水或逐次实机调试日志。
 
@@ -41,8 +44,8 @@ BLE 承载发现、应用认证和业务消息；Classic Bluetooth SPP 承载主
 认证使用现实现中的 challenge/device ID/协议常量计算；账户绑定 ECDH 分支尚未实现，遇到时明确失败。
 Android 当前 [RayneoConnection.kt](../android/app/src/main/java/com/openrayneo/android/RayneoConnection.kt) 仍固定 TLV 27=1，
 未同步采用 Mac 的普通重连 2；不能将 Mac 的已验流程泛化为两端已经一致。
-详细字段、常量及系统配对调用保留在 [main.swift](../Sources/OpenRayneoBridge/main.swift) 和
-[BluetoothPairing.swift](../Sources/OpenRayneoBridge/BluetoothPairing.swift)，不要另造第二份认证算法。
+详细字段、常量及系统配对调用保留在 [main.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/main.swift) 和
+[BluetoothPairing.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/BluetoothPairing.swift)，不要另造第二份认证算法。
 
 BLE 写入按 `maximumWriteValueLength(.withoutResponse)` 分块，并服从 `canSendWriteWithoutResponse`；
 等待 `peripheralIsReady` 后继续。蓝牙 delegate 在主队列，阻塞等待必须在工作队列。
@@ -95,8 +98,8 @@ SPP 发出的请求可能经 BLE 返回；不能只在发送所在链路注册�
 所有 socket/delegate/查询按目标设备、连接 generation 与接收 epoch 隔离。
 新连接清理旧半帧、控制队列和回执等待；迟到旧回调不接管新连接。
 恢复连接不自动重放已失败的业务写；重新读取设备状态后由调用方决定下一步。
-实现：[main.swift](../Sources/OpenRayneoBridge/main.swift)、
-[BridgeProcessLifecycle.swift](../Sources/OpenRayneoBridge/BridgeProcessLifecycle.swift)。
+实现：[main.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/main.swift)、
+[BridgeProcessLifecycle.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/BridgeProcessLifecycle.swift)。
 
 全局前后台通知走 `0x10` 原始命令 31：前台 `1f 00 01 02`，后台 `1f 00 01 01`。
 录音 `0x0e` type 14 的 `{isAppForeground:bool}` 是另一条业务通知，不能互相替代。
@@ -105,7 +108,7 @@ GUI 根据 `NSApp.isActive` 同步，而不是仅看窗口可见；headless 默�
 状态分别记录 pending、已发送和 generation；`applicationAccepted:null` 表示没有业务接受确认。
 正常退出可发送后台状态；焦点变化不会因此自动停止录音。
 初始时钟/前后台/设置/原生录音/提词器同步入口在
-[DeviceStateSynchronization.swift](../Sources/OpenRayneoBridge/DeviceStateSynchronization.swift)。
+[DeviceStateSynchronization.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/DeviceStateSynchronization.swift)。
 
 官方 handler 未注册入站队列只缓存 `0x0e/0x13/0x06/0x0f/0x14`：15 秒、总 24 条、每业务 8 条，
 默认 payload 4096 字节，versionCheck 8192 字节，一次取出后移除。
@@ -152,7 +155,7 @@ GUI 根据 `NSApp.isActive` 同步，而不是仅看窗口可见；headless 默�
 
 回答 payload 含 `answer:{text,isFinal}`，以及 domain/intent/offline/query/round/sid/sub/timestamp/uuid/vendor 等字段。
 chat 使用 `domain=intent=chat`、Unix 秒 timestamp；完整序列化以
-[NativeAssistantPayload.swift](../Sources/OpenRayneoBridge/NativeAssistantPayload.swift) 为准。
+[NativeAssistantPayload.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/NativeAssistantPayload.swift) 为准。
 唤醒 wakeID、收音 captureID、显示 SID、记录 ID、Agent task ID 和 DSH 会话身份必须分开。
 停止收音不等于取消已经派发的 Agent；迟到回答须经过当前 wake/SID/显示意图门控。
 DSH 原生 live 跨 wake 以稳定 phone ID + conversation key + preset 复用；显式新对话换 key。
@@ -166,8 +169,8 @@ ASR feed 是有确认游标的短期消费通道，确认后音频可清除。
 下一成功轮替换旧 latest，旧自建音频进废纸篓；当前临时录音和上一完整文件可以短暂共存。
 断连、解码缺口或写入失败标记 incomplete，保留上一完整 latest。
 状态区分当前 capture 和 `latest.captureID`，比较时禁止把上一轮误作当前；精确 GET 路由见 API 参考。
-实现：[NativeAssistantController.swift](../Sources/OpenRayneoBridge/NativeAssistantController.swift)、
-[NativeDiagnosticRecording.swift](../Sources/OpenRayneoBridge/NativeDiagnosticRecording.swift)。
+实现：[NativeAssistantController.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/NativeAssistantController.swift)、
+[NativeDiagnosticRecording.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/NativeDiagnosticRecording.swift)。
 
 ## 6. 实时字幕、提示与双路 PCM
 
@@ -191,9 +194,9 @@ SID 必须贯穿 start/audio/update/exit；只有收到匹配 SID 的成功配�
 官方实时入口常以 48k stereo 解码；本地 speaker 按 lane 重采样至 16k，不能共用两路 FIR 状态。
 没有真实 word 时间时保留整句范围和 speaker turns，不编造词级边界。
 完整字段与墙钟映射见同步合同。实现：
-[ChannelSpeakerProcessor.swift](../Sources/OpenRayneoBridge/ChannelSpeakerProcessor.swift)、
-[DesktopChannelRound.swift](../Sources/OpenRayneoBridge/DesktopChannelRound.swift)、
-[AssistantAudioFeed.swift](../Sources/OpenRayneoBridge/AssistantAudioFeed.swift)、
+[ChannelSpeakerProcessor.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/ChannelSpeakerProcessor.swift)、
+[DesktopChannelRound.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/DesktopChannelRound.swift)、
+[AssistantAudioFeed.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/AssistantAudioFeed.swift)、
 [PromptAudio.kt](../android/app/src/main/java/com/openrayneo/android/PromptAudio.kt)。
 
 ## 7. LifeLog / 全天入口
@@ -222,7 +225,7 @@ A4 按 taskId 保存原始 bytes；`.opus` 扩展不意味着 Ogg 容器。
 全天入口可能已有约 20 秒来源延迟，必须标注估计；不能套到原生实时 wake。
 录音 offset 只计实际 PCM，跨轮静默由接收时间锚点表达，不把全天时间压成连续音频长度。
 停止观察只撤销自己启用的开关/工作流，避免退出调试页误关其他拥有者。
-实现：[LifeLogCaptureStore.swift](../Sources/OpenRayneoBridge/LifeLogCaptureStore.swift)。
+实现：[LifeLogCaptureStore.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/LifeLogCaptureStore.swift)。
 
 ## 8. 原生录音与离线恢复
 
@@ -260,8 +263,8 @@ mark type 11 主机只发 `{uuid,code,action:2}`，不发送本地标记文字/�
 code 1 本地保存成功，2 相邻标记不足五秒，3 无匹配 durable 会话或保存失败。
 位置为录音相对整秒，优先录音进度；fallback/接收 offset 校准须保存 timeBasis。
 资料库编辑/删除仅改本地索引，tombstone 防止刷新复活；剪辑副本按保留区间重映射标记。
-实现：[NativeRecordingController.swift](../Sources/OpenRayneoBridge/NativeRecordingController.swift)、
-[RecordingMarker.swift](../Sources/OpenRayneoBridge/RecordingMarker.swift)。
+实现：[NativeRecordingController.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/NativeRecordingController.swift)、
+[RecordingMarker.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/RecordingMarker.swift)。
 
 ## 9. 通用文件与提词器
 
@@ -273,7 +276,7 @@ FileInfoSync 含 uuid/filename/filesize(uint64)/md5/bus_id；chunk 含 uuid/chun
 发送完成须等远端 FileRecvState SUCCESS；接收完成须文件覆盖和 MD5，完成通知发送失败另记状态。
 取消先停本机，未完成文件进废纸篓；能连接时发送 FileCancel，不为取消强制重连。
 120 秒无进展判超时；尚无跨进程自动续传合同，已有 offset 字段不构成持久 resume 协议。
-实现：[FileTransferController.swift](../Sources/OpenRayneoBridge/FileTransferController.swift)。
+实现：[FileTransferController.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/FileTransferController.swift)。
 
 提词器 `0x14` 的 action 1 请求/2 响应，type 1列表、2选稿、3开始读、4暂停、5继续、6停止、7设置、8进度、9音频、10状态、11toast。
 列表 type 为 fullSync1/batchTop2/batchAdd3/batchDelete4/updateContent5；删除单稿不发清空整个列表。
@@ -282,8 +285,8 @@ FileInfoSync 含 uuid/filename/filesize(uint64)/md5/bus_id；chunk 含 uuid/chun
 文件完成和提词器接收确认分别等待，后者 code1/7 为已恢复成功分支；开始读再回应 type3。
 scroll 为 followSpeak1/linear2/manual3；设置及页内高亮位置须沿已恢复 serializer，不猜 mode。
 连接恢复读取状态/checksum，不把眼镜位置无条件覆盖本机未提交编辑。
-实现：[TeleprompterRepository.swift](../Sources/OpenRayneoBridge/TeleprompterRepository.swift)、
-[TeleprompterFollowController.swift](../Sources/OpenRayneoBridge/TeleprompterFollowController.swift)。
+实现：[TeleprompterRepository.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/TeleprompterRepository.swift)、
+[TeleprompterFollowController.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/TeleprompterFollowController.swift)。
 
 ## 10. 设置、Dashboard、日程与通知
 
@@ -337,7 +340,7 @@ value0 的 data 是文件 UUID，按设备+UUID等通用文件完成后才算下
 
 Beta 关闭官方登录、上传、云记忆/音频、固件联网下载、反馈发送及 `0x19` HTTP 代理。
 旧本机缓存保留；眼镜硬件业务、本机 Agent、手机同步和显式本地 OTA 包是独立入口。
-边界以 [OfficialCloudPolicy.swift](../Sources/OpenRayneoBridge/OfficialCloudPolicy.swift) 为准，旧云源码仍可审阅但不是活跃产品合同。
+边界以 [OfficialCloudPolicy.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/OfficialCloudPolicy.swift) 为准，旧云源码仍可审阅但不是活跃产品合同。
 
 ## 12. 实现与原始证据索引
 
@@ -345,18 +348,18 @@ Beta 关闭官方登录、上传、云记忆/音频、固件联网下载、反�
 
 | 领域 | 当前实现 | 保留的逆向入口 |
 | --- | --- | --- |
-| 配对/双链路/恢复 | [main.swift](../Sources/OpenRayneoBridge/main.swift)、[BluetoothPairing](../Sources/OpenRayneoBridge/BluetoothPairing.swift) | [reconnect](../analysis/reverse-2026-11-03/reconnect/)、[native-protocols](../analysis/reverse-2026-11-03/native-protocols/) |
-| 能力/早到入站队列 | [CapabilityController](../Sources/OpenRayneoBridge/CapabilityController.swift)、常驻 handler | [capability-registry-init.asm](../analysis/reverse-2026-11-03/capability-registry-init.asm)、[pending-message-enqueue.asm](../analysis/reverse-2026-11-03/pending-message-enqueue.asm) |
+| 配对/双链路/恢复 | [main.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/main.swift)、[BluetoothPairing](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/BluetoothPairing.swift) | [reconnect](../analysis/reverse-2026-11-03/reconnect/)、[native-protocols](../analysis/reverse-2026-11-03/native-protocols/) |
+| 能力/早到入站队列 | [CapabilityController](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/CapabilityController.swift)、常驻 handler | [capability-registry-init.asm](../analysis/reverse-2026-11-03/capability-registry-init.asm)、[pending-message-enqueue.asm](../analysis/reverse-2026-11-03/pending-message-enqueue.asm) |
 | 帧/扩展/ACK | main.swift 的 ProtocolCodec、RFCOMMTransport | [transport-reader-fallback.java](../analysis/reverse-2026-11-03/transport-reader-fallback.java)、[transport-ack-manager.java](../analysis/reverse-2026-11-03/transport-ack-manager.java) |
 | 原生/全天/实时音频 | NativeAssistantController、LifeLogCaptureStore、SpeechController | [memory-read](../analysis/reverse-2026-11-03/memory-read/)、[caption-protocols](../analysis/reverse-2026-11-03/caption-protocols/)、[后续实时入口审计](../analysis/reverse-2026-11-07/official-interactive/) |
 | 原生录音/离线/标记 | NativeRecordingController、RecordingMarker | [recording-orphan-import](../analysis/reverse-2026-11-03/recording-orphan-import/)、[recording-marks](../analysis/reverse-2026-11-03/recording-marks/)、[原始包](../analysis/reverse-2026-11-03/baseline-hci/) |
 | 文件传输 | FileTransferController | [file_transfer.proto](../analysis/reverse-2026-11-03/apk-native/file_transfer.proto)、[SDK源](../analysis/reverse-2026-11-03/jadx/sources/K5/) |
-| 字幕/提词/导航边界 | [TeleprompterRepository](../Sources/OpenRayneoBridge/TeleprompterRepository.swift)、SpeechController | [display-navigation](../analysis/reverse-2026-11-03/display-navigation/)、[glasses-teleprompter-logs](../analysis/reverse-2026-11-03/glasses-teleprompter-logs/) |
-| Launcher/AI/表冠/息屏 | [GlassesSettingsController](../Sources/OpenRayneoBridge/GlassesSettingsController.swift) | [launcher-setters](../analysis/reverse-2026-11-03/launcher-setters/)、[assistant-settings](../analysis/reverse-2026-11-03/assistant-settings/)、[device-actions](../analysis/reverse-2026-11-03/device-actions/)、[wake-display](../analysis/reverse-2026-11-03/wake-display/) |
-| Dashboard/天气/预览 | [DashboardLayoutModel](../Sources/OpenRayneoBridge/DashboardLayoutModel.swift)、[DashboardPreviewStateStore](../Sources/OpenRayneoBridge/DashboardPreviewStateStore.swift) | [dashboard-serializers](../analysis/reverse-2026-11-03/dashboard-serializers/)、[weather-removal](../analysis/reverse-2026-11-03/weather-removal/)、[dashboard-preview](../analysis/reverse-2026-11-03/dashboard-preview/) |
-| 日程/系统日历 | [ScheduleController](../Sources/OpenRayneoBridge/ScheduleController.swift)、[CalendarSyncModel](../Sources/OpenRayneoBridge/CalendarSyncModel.swift) | [calendar-writeback](../analysis/reverse-2026-11-03/calendar-writeback/)、[mutation-hci](../analysis/reverse-2026-11-03/mutation-hci/) |
-| 通知/MAP | [NotificationMirrorModel](../Sources/OpenRayneoBridge/NotificationMirrorModel.swift) | [notification-replies](../analysis/reverse-2026-11-03/notification-replies/) |
-| 能力/OTA/日志/未知业务 | [CapabilityController](../Sources/OpenRayneoBridge/CapabilityController.swift)、[OTAUpdateController](../Sources/OpenRayneoBridge/OTAUpdateController.swift)、[MaintenanceController](../Sources/OpenRayneoBridge/MaintenanceController.swift) | [maintenance-enums.json](../analysis/reverse-2026-11-03/maintenance-enums.json)、[log-ack-handler.asm](../analysis/reverse-2026-11-03/log-ack-handler.asm)、[other-device-businesses](../analysis/reverse-2026-11-03/other-device-businesses/) |
+| 字幕/提词/导航边界 | [TeleprompterRepository](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/TeleprompterRepository.swift)、SpeechController | [display-navigation](../analysis/reverse-2026-11-03/display-navigation/)、[glasses-teleprompter-logs](../analysis/reverse-2026-11-03/glasses-teleprompter-logs/) |
+| Launcher/AI/表冠/息屏 | [GlassesSettingsController](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/GlassesSettingsController.swift) | [launcher-setters](../analysis/reverse-2026-11-03/launcher-setters/)、[assistant-settings](../analysis/reverse-2026-11-03/assistant-settings/)、[device-actions](../analysis/reverse-2026-11-03/device-actions/)、[wake-display](../analysis/reverse-2026-11-03/wake-display/) |
+| Dashboard/天气/预览 | [DashboardLayoutModel](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/DashboardLayoutModel.swift)、[DashboardPreviewStateStore](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/DashboardPreviewStateStore.swift) | [dashboard-serializers](../analysis/reverse-2026-11-03/dashboard-serializers/)、[weather-removal](../analysis/reverse-2026-11-03/weather-removal/)、[dashboard-preview](../analysis/reverse-2026-11-03/dashboard-preview/) |
+| 日程/系统日历 | [ScheduleController](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/ScheduleController.swift)、[CalendarSyncModel](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/CalendarSyncModel.swift) | [calendar-writeback](../analysis/reverse-2026-11-03/calendar-writeback/)、[mutation-hci](../analysis/reverse-2026-11-03/mutation-hci/) |
+| 通知/MAP | [NotificationMirrorModel](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/NotificationMirrorModel.swift) | [notification-replies](../analysis/reverse-2026-11-03/notification-replies/) |
+| 能力/OTA/日志/未知业务 | [CapabilityController](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/CapabilityController.swift)、[OTAUpdateController](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/OTAUpdateController.swift)、[MaintenanceController](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/MaintenanceController.swift) | [maintenance-enums.json](../analysis/reverse-2026-11-03/maintenance-enums.json)、[log-ack-handler.asm](../analysis/reverse-2026-11-03/log-ack-handler.asm)、[other-device-businesses](../analysis/reverse-2026-11-03/other-device-businesses/) |
 
 SDK 源、Dart VM 指令边界与对象池统一保留在 [JADX](../analysis/reverse-2026-11-03/jadx/)、
 [Blutter](../analysis/reverse-2026-11-03/blutter-output/)；原始抓包高于字段猜测，实际 sender 高于仅名称/字符串。

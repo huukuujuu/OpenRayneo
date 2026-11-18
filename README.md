@@ -2,11 +2,13 @@
 
 <img src="docs/assets/openrayneo-logo.png" alt="OpenRayneo" width="120" />
 
-RayNeo iO 眼镜的 macOS / Android 伴侣。引出眼镜已有能力，完成采集、基础处理、记录与本机 Agent 接入。Mac 侧重工作流扩展和测试，手机侧重日常易用与全天记录。
+RayNeo iO 眼镜的 Android 伴侣。引出眼镜已有能力，完成采集、基础处理、记录与本机 Agent 接入，侧重日常易用与全天记录。
+
+`android-only` 分支只保留 Android 应用与 DSH 插件；macOS Bridge、音频驱动、Mac API 技能和宣传片源码留在 `main` 历史中，本分支不再构建或维护。
 
 ## 架构是项目主文档
 
-- [架构看板](.arch/dashboard.html)：由 `.arch/graph.json` 生成的当前节点与契约。
+- [架构看板](.arch/dashboard.html)：由 `.arch/graph.json` 生成的当前节点与契约（图中 Mac 节点为历史记录）。
 - [事实、当前实现与未解决问题](.arch/ground_truth.md)：开发和验收的当前基线。
 - [北极星](.arch/SEED.md)与[废弃方案](.arch/graveyard.md)：目标与取舍依据。
 - [开发约定](AGENTS.md)：维护架构、代码和精简文档的规则。
@@ -26,8 +28,7 @@ uv run ~/.agents/skills/arch-grower/scripts/arch_cli.py export-ui --out .arch/da
 | --- | --- |
 | 安装、构建、连接、DSH、声音调试与故障恢复 | [运行指南](docs/runbook.md) |
 | 设备帧、认证、控制生命周期与逆向证据索引 | [核心协议](docs/protocol.md) |
-| 手机记录与 Mac 副本、游标、派生写回 | [同步契约](docs/record-sync-contract.md) |
-| Mac 本机 HTTP API、参数与请求脚本 | [API 技能](.agents/skills/openrayneo-api/SKILL.md) |
+| 手机记录同步服务、游标、派生写回 | [同步契约](docs/record-sync-contract.md) |
 | 手机本机 DSH Agent 插件 | [插件说明](integrations/dsh-go/README.md) |
 
 当前候选包和质量问题见[实现快照](.arch/ground_truth.md#当前实现与未解决问题)。官方账号／官方云服务分支在当前 Beta 停用；眼镜固件及官方已具备的功能构成设备能力边界。

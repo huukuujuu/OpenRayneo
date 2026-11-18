@@ -1,8 +1,5 @@
-# Swift and local app builds
+# Local build output
 .build/
-.swiftpm/
-*.app/
-DerivedData/
 
 # Architecture source of truth; the local shadow Git is never a submodule
 /.arch/*

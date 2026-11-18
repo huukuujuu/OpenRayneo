@@ -1,6 +1,6 @@
 # Local speech models
 
-OpenRayneo uses the following unchanged pretrained models and Android/macOS runtimes. The model binaries and AAR are downloaded by `scripts/prepare-android-voice.sh`; they are not committed. macOS uses the same model files and sherpa-onnx 2.0.1 C API/ONNX Runtime, downloaded by `scripts/prepare-mac-voice.sh`; the bundled public C header is retained under `Sources/CSherpaOnnx` with its original copyright. This build does not train or fine-tune these models.
+OpenRayneo uses the following unchanged pretrained models and the Android runtime. The model binaries and AAR are downloaded by `scripts/prepare-android-voice.sh`; they are not committed. This build does not train or fine-tune these models.
 
 - **sherpa-onnx 2.0.1** Android AAR, k2-fsa contributors, Apache-2.0. [Release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1), license in `LICENSE`.
 - **3D-Speaker CAM++ Chinese 16k common** speaker embeddings, Alibaba DAMO/3D-Speaker contributors, Apache-2.0. [Model card](https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common), [project](https://github.com/modelscope/3D-Speaker). Export distributed by [sherpa speaker recognition models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models), filename `3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`. License in `CAMPLUS-LICENSE`.
