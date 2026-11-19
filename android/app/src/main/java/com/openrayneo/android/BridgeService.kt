@@ -551,7 +551,8 @@ internal class BridgeService : Service() {
             val begin = { if (protocol == 0x13) startTranslation(captions = !translate, glassesPage = true) else startRealtimeHint(fromGlasses = true) }
             if (conversations.state.running) {
                 onLog("안경 메뉴의 $feature 요청: ${conversations.state.source.title} 기록을 멈추고 시작 (남은 전사는 나중에 보충)")
-                if (conversations.state.source == ConversationSource.ALWAYS_ON) resumeAlwaysOn = conversations.state.mode.takeUnless { conversations.state.stopping }
+                if (conversations.state.source == ConversationSource.ALWAYS_ON)
+                    resumeAlwaysOn = conversations.state.mode.takeUnless { conversations.state.stopping } ?: resumeAlwaysOn
                 conversations.handoffForWake {
                     // The 8 s answer window may have closed (request refused) while the record was stopping.
                     if (state.offer?.sid != sid) return@handoffForWake
