@@ -2,10 +2,10 @@
 
 OpenRayneo owns the glasses connection, audio storage, ASR, local speaker processing and record summaries.
 The phone's external Agent decides whether to wait, answer, call tools or run a workflow.
-Current delivery: plugin **0.1.11** with the current Android build. 0.1.11 puts every OpenRayneo DSH session in one folder (`sessionFolder`, default `OpenRayneo` under the folder DSH was started in; `~/...` or an absolute path also work, empty keeps the DSH default). Updating from 0.1.10 with a folder set starts a new native conversation there; the old sessions stay in DSH. If the folder cannot be created the session runs in the DSH default folder and is not kept for the next wake. 0.1.10 added the glasses' Live answers mode (`mode: live_answers`): its own routing, hint and agent prompts suggest replies to what other people ask the wearer, while the app's realtime hint keeps answering only the wearer. From 0.1.9 the app sends the voice facts as JSON and the plugin decides
+Current delivery: plugin **0.1.12** with the current Android build. 0.1.12 gives each glasses feature its own sub-folder, registered as a DSH workspace so DSH Go lists it (`RayNeo 깨우기`, `RayNeo 실시간 답변`, `RayNeo 실시간 힌트`, `RayNeo 종일 기록`, `RayNeo 작업`); a session created with only a folder belongs to no workspace and DSH Go does not show it. Listening modes still open a DSH session only when the router picks `agent`: `wait` and `hint` answer without one. 0.1.11 put every OpenRayneo DSH session in one folder (`sessionFolder`, default `OpenRayneo` under the folder DSH was started in; `~/...` or an absolute path also work, empty keeps the DSH default). Updating from 0.1.10 with a folder set starts a new native conversation there; the old sessions stay in DSH. If the folder cannot be created the session runs in the DSH default folder and is not kept for the next wake. 0.1.10 added the glasses' Live answers mode (`mode: live_answers`): its own routing, hint and agent prompts suggest replies to what other people ask the wearer, while the app's realtime hint keeps answering only the wearer. From 0.1.9 the app sends the voice facts as JSON and the plugin decides
 whether an answer is needed: realtime and all-day/meeting speech first goes through a short wait/hint/agent check, so ordinary talk
 opens no DSH session. Agent turns show each utterance once as `speaker: text`; instructions are sent only on a session's first turn.
-Use 0.1.11 with current app builds (0.1.9 treats Live answers like the realtime hint; 0.1.8 would answer every utterance); it still accepts the older app's prose context.
+Use 0.1.12 with current app builds (0.1.9 treats Live answers like the realtime hint; 0.1.8 would answer every utterance); it still accepts the older app's prose context.
 Architecture and current limitations live in the workspace `.arch/`; operations live in `docs/runbook.md`.
 
 ## Install and connect
@@ -16,7 +16,7 @@ Install this directory once:
 dsh plugin --profile web add /absolute/path/openrayneo-dsh
 ```
 
-For a packaged update, replace the installed plugin directory with `openrayneo-dsh-0.1.11.tgz` contents.
+For a packaged update, replace the installed plugin directory with `openrayneo-dsh-0.1.12.tgz` contents.
 The npm archive has a top-level `package/`; use `--strip-components=1` when extracting into that directory.
 Update the companion APK and restart the DSH engine after replacing plugin code.
 Existing connection credentials and saved phone records remain.

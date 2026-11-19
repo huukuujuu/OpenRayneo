@@ -63,11 +63,47 @@ internal class BridgeService : Service() {
     private var latestRealtimeRequest = 0L
     /** The newest realtime request whose answer reached the glasses: older answers arriving later are dropped. */
     private var shownRealtimeRequest = 0L
-    /** The answer on screen came from the listening realtime record: it returns to the listening page after a while. */
-    private var realtimeAnswerRef: AnswerRef? = null
+    // Listening page transcript (main thread): recent finished sentences and each channel's unfinished one.
+    private val heardFinals = ArrayDeque<String>()
+    private val heardPartials = sortedMapOf<Int, Pair<String, Long>>()
+    private fun heard(channel: Int, text: String, final: Boolean) {
+        if (!conversationOwnsDisplay) return
+        val value = text.trim(); val now = System.currentTimeMillis()
+        if (final) {
+            // A final can arrive after the next sentence's partials (speaker analysis delays it): keep those.
+            heardPartials[channel]?.first?.let { if (it.take(6) == value.take(6)) heardPartials.remove(channel) }
+            heardFinals.addLast(value); while (heardFinals.size > 4) heardFinals.removeFirst()
+        } else heardPartials[channel] = value to now
+        // A round that ended without a final (error, noise) must not leave its partial on screen.
+        heardPartials.entries.removeAll { now - it.value.second > STALE_PARTIAL_MS }
+        val transcript = (heardFinals + heardPartials.values.map { it.first }).filter { it.isNotEmpty() }.joinToString(" ")
+        dispatch(GlassesEvent.StandbyText(TranslationView(transcript, "듣는 중")))
+    }
+    private var standbyAnswerTask: Runnable? = null
+    private var standbyAnswerKey: Pair<AnswerRef, Int>? = null
+    /** Turns the pages of the listening page's answer, then removes it; paused while another page is in front. */
+    private fun updateStandbyAnswerTimer() {
+        val answer = state.standbyAnswer
+        val visible = answer != null && state.intent == DisplayIntent.PromptStandby && state.session?.mode == PageMode.PROMPT &&
+            state.ownership == DisplayOwnership.APP && state.link.phase == LinkPhase.FULL && !state.disconnecting
+        val key = answer?.let { it.ref to it.page }
+        if (!visible || key != standbyAnswerKey) { standbyAnswerTask?.let(main::removeCallbacks); standbyAnswerTask = null; standbyAnswerKey = null }
+        if (!visible || answer == null || standbyAnswerTask != null) return
+        val last = answer.page >= answer.pages.lastIndex
+        val setting = settings.read().optInt("answerClearSeconds", 0).coerceIn(0, 3600)
+        val delay = if (!last) ANSWER_PAGE_MS else (if (setting == 0) REALTIME_ANSWER_HOLD_SECONDS else setting) * 1000L
+        standbyAnswerKey = key
+        standbyAnswerTask = Runnable {
+            standbyAnswerTask = null; standbyAnswerKey = null
+            dispatch(if (last) GlassesEvent.ClearStandbyAnswer(answer.ref) else GlassesEvent.StandbyAnswerPage(answer.ref, answer.page + 1))
+        }.also { main.postDelayed(it, delay) }
+    }
     /** Bumped each time the listening page opens: answers to requests from before it (e.g. hint mode) are not shown. */
     private var listeningEpoch = 0L
-    private fun openListening() { listeningEpoch++; conversationOwnsDisplay = true; dispatch(GlassesEvent.OpenStandby) }
+    private fun openListening() {
+        listeningEpoch++; heardFinals.clear(); heardPartials.clear()
+        conversationOwnsDisplay = true; dispatch(GlassesEvent.OpenStandby)
+    }
     private val pendingAnswers = mutableMapOf<AnswerSource, AnswerPermit>()
     private data class VoiceDelivery(val ref: AnswerRef, val source: ConversationSource, val wakeId: String?)
     private var voiceReply: VoiceDelivery? = null
@@ -136,11 +172,11 @@ internal class BridgeService : Service() {
         conversations = ConversationController(this, settings, ::conversationChanged, ::conversationCapture, ::submitVoiceRequest,
             { segment, source ->
                 if (source == ConversationSource.NATIVE) segment.roundId?.let { voiceTransport.asr(segment.text, it) }
-                // Realtime hint: show what was just heard so the wearer knows the glasses are listening.
-                if (source == ConversationSource.REALTIME && conversationOwnsDisplay)
-                    dispatch(GlassesEvent.StandbyText(TranslationView(LiveTranslator.clip(segment.text, 80), "듣는 중 · 답이 필요하면 여기에 표시됩니다")))
+                // Listening page: everything heard is transcribed live, like captions; answers appear below it.
+                if (source == ConversationSource.REALTIME) heard(segment.sourceChannel, segment.text, final = true)
             }, ::resumeBackground)
         conversations.partial = { text, wake -> main.post { voiceTransport.partial(text, wake) } }
+        conversations.livePartial = { channel, text -> main.post { heard(channel, text, final = false) } }
         recordSync = RecordSyncServer(settings, conversations.repository, conversations.recordings, main, ::notifyUI, ::logText)
         if (settings.read().optBoolean("recordSyncEnabled")) recordSync.start()
         voiceAudio = PromptAudio { left, right ->
@@ -245,6 +281,7 @@ internal class BridgeService : Service() {
                     translator.stop(); events.add(GlassesEvent.PauseDisplay)
                 } else if (translator.active && state.intent != DisplayIntent.Translation) translator.stop()
                 updateAnswerClearTimer()
+                updateStandbyAnswerTimer()
                 if (resumeAlwaysOn != null && previous.intent != DisplayIntent.Idle && state.intent == DisplayIntent.Idle) main.post(::resumeBackground)
                 if (state.displayDescription != previous.displayDescription) onLog(state.displayDescription)
                 transition.effects.forEach { effect ->
@@ -451,20 +488,14 @@ internal class BridgeService : Service() {
             voiceTransport.reply(answer, question, wake)
         else if (source == ConversationSource.REALTIME && input.optString("serviceInstance") == serviceInstance &&
             // Every heard sentence sends a request, and most end as "wait": a later sentence must not drop this answer,
-            // only a newer answer already shown does. The page must still be the listening page or one of its answers.
+            // only a newer answer already shown does, and only answers to this listening page count.
             input.optLong("realtimeRequest") > shownRealtimeRequest && input.optLong("listeningEpoch", -1) == listeningEpoch &&
-            // Never over an answer the user asked for, or while one is still being prepared.
-            pendingAnswers.isEmpty() && (state.intent == DisplayIntent.PromptStandby || state.intent == DisplayIntent.BlankPrompt ||
-                realtimeAnswerRef != null && (state.intent as? DisplayIntent.Answer)?.ref == realtimeAnswerRef) &&
             conversations.state.running && conversations.state.activeRecord?.id == id && conversationOwnsDisplay &&
             state.ownership == DisplayOwnership.APP && state.link.phase == LinkPhase.FULL && !state.disconnecting) {
+            // The answer joins the listening page under the live transcript; the page itself never changes.
             val ref = AnswerRef(AnswerSource.MOBILE_AGENT, input.getLong("realtimeRequest"))
             shownRealtimeRequest = ref.taskId
-            dispatch(GlassesEvent.AnswerRequested(ref))
-            val permit = checkNotNull(state.answerPermit)
-            realtimeAnswerRef = ref
-            autoClearFor = ref; clearAnswerTask?.let(main::removeCallbacks); clearAnswerTask = null
-            dispatch(GlassesEvent.AnswerCompleted(AnswerContent(ref, question, answer), permit))
+            dispatch(GlassesEvent.StandbyAnswer(AnswerContent(ref, question, answer)))
         } else if (state.link.phase == LinkPhase.FULL && !state.disconnecting) connection.sendNotification("어시스턴트", answer)
     }
     fun pausePrompt() { conversations.stop(); dispatch(GlassesEvent.PauseDisplay) }
@@ -705,16 +736,11 @@ internal class BridgeService : Service() {
         }
         val session = state.session ?: return
         if (clearAnswerTask != null || session.phase != PagePhase.READY || session.writtenContent != session.content) return
-        val setting = settings.read().optInt("answerClearSeconds", 0).coerceIn(0,3600)
-        // A realtime answer always goes back to the listening page (heard sentences show again); 0 means the default hold.
-        val listening = ref == realtimeAnswerRef
-        val seconds = if (listening && setting == 0) REALTIME_ANSWER_HOLD_SECONDS else setting
+        val seconds = settings.read().optInt("answerClearSeconds", 0).coerceIn(0,3600)
         if (seconds == 0) { autoClearFor = null; return }
         val revision = state.revision; val id = session.id
         clearAnswerTask = Runnable {
-            if (state.session?.id == id && state.revision == revision && (state.intent as? DisplayIntent.Answer)?.ref == ref) {
-                if (listening) { autoClearFor = null; clearAnswerTask = null; dispatch(GlassesEvent.DismissAnswer) } else clearDisplay()
-            }
+            if (state.session?.id == id && state.revision == revision && (state.intent as? DisplayIntent.Answer)?.ref == ref) clearDisplay()
         }.also { main.postDelayed(it, seconds * 1000L) }
     }
     fun revealAnswer(source: AnswerSource) {
@@ -897,6 +923,7 @@ internal class BridgeService : Service() {
 
 internal const val DEFAULT_ANSWER_MAX_CHARS = 60
 private const val ANSWER_PAGE_MS = 7_000L
-private const val REALTIME_ANSWER_HOLD_SECONDS = 10
+private const val REALTIME_ANSWER_HOLD_SECONDS = 15
+private const val STALE_PARTIAL_MS = 10_000L
 private val PROBLEM = Regex("실패|오류|끊|보충|미룸|대기|절전|배터리|온도|내려받|API Key|멈췄|다시 연결")
 private const val NO_VIRTUAL_TARGET = "가상 음성을 받을 기능이 없습니다. 먼저 안경에서 실시간 자막/답변/음성 메모를 열거나 깨우세요"

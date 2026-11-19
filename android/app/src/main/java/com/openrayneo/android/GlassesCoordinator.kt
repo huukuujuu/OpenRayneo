@@ -80,9 +80,14 @@ internal object GlassesCoordinator {
             GlassesEvent.PauseDisplay -> setIntent(DisplayIntent.Idle)
             GlassesEvent.OpenStandby -> {
                 setIntent(DisplayIntent.PromptStandby)
-                state = state.copy(standby = TranslationView())
+                state = state.copy(standby = TranslationView(), standbyAnswer = null)
             }
             is GlassesEvent.StandbyText -> state = state.copy(standby = event.view)
+            is GlassesEvent.StandbyAnswer -> state = state.copy(standbyAnswer = event.content)
+            is GlassesEvent.StandbyAnswerPage -> state.standbyAnswer?.takeIf { it.ref == event.ref }?.let {
+                state = state.copy(standbyAnswer = it.copy(page = event.page.coerceIn(0, it.pages.lastIndex)))
+            }
+            is GlassesEvent.ClearStandbyAnswer -> if (state.standbyAnswer?.ref == event.ref) state = state.copy(standbyAnswer = null)
             is GlassesEvent.StartTranslation -> {
                 setIntent(DisplayIntent.Translation)
                 state = state.copy(translation = TranslationView(), captions = event.captions, glassesCaptions = event.glassesPage)
@@ -222,8 +227,16 @@ internal object GlassesCoordinator {
         return when (val intent = state.intent) {
             DisplayIntent.Idle -> null
             DisplayIntent.BlankPrompt -> PageMode.PROMPT to PageContent("blank", "　", "　")
-            DisplayIntent.PromptStandby -> PageMode.PROMPT to PageContent("standby",
-                state.standby.source.ifBlank { "OpenRayneo" }, state.standby.target.ifBlank { "실시간 힌트 준비됨" })
+            // Listening page: the live transcript on top (its newest words), the latest answer below it while there is one.
+            // The window cuts after about 120 characters, so the transcript shrinks while an answer page is shown.
+            DisplayIntent.PromptStandby -> state.standbyAnswer.let { answer ->
+                val heard = state.standby.source.trim()
+                if (answer == null) PageMode.PROMPT to PageContent("standby",
+                    LiveTranslator.clip(heard, LISTENING_CHARS).ifBlank { "OpenRayneo" }, state.standby.target.ifBlank { "실시간 힌트 준비됨" })
+                else PageMode.PROMPT to PageContent("standby",
+                    LiveTranslator.clip(heard, LISTENING_WITH_ANSWER_CHARS).ifBlank { answer.question.ifBlank { "OpenRayneo" }.let { LiveTranslator.clip(it, LISTENING_WITH_ANSWER_CHARS) } },
+                    answer.pages.getOrElse(answer.page) { _ -> answer.text })
+            }
             DisplayIntent.Translation -> if (state.glassesCaptions) PageMode.CAPTION to PageContent(if (state.captions) "captions" else CAPTION_TRANSLATED,
                 state.translation.source, state.translation.target, state.translation.serial, state.translation.final)
             else if (state.captions) PageMode.PROMPT to PageContent("captions",
@@ -241,3 +254,6 @@ internal object GlassesCoordinator {
         }
     }
 }
+
+private const val LISTENING_CHARS = 90
+private const val LISTENING_WITH_ANSWER_CHARS = 30

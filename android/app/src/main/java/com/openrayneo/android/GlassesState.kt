@@ -100,8 +100,10 @@ internal data class GlassesState(
     val glassesCaptions: Boolean = false,
     /** Start request from the glasses menu waiting for the matching page to open. */
     val offer: GlassesOffer? = null,
-    /** Live caption on the realtime-hint standby page: last heard sentence and a status line. */
+    /** Listening page (realtime hint / Live answers): live transcript of what is heard, and a status line. */
     val standby: TranslationView = TranslationView(),
+    /** The latest realtime answer, shown under the live transcript on the listening page (paged like answers). */
+    val standbyAnswer: AnswerContent? = null,
     val revision: Long = 0,
     val nextSession: Long = 1,
     val answerPermit: AnswerPermit? = null,
@@ -154,6 +156,9 @@ internal sealed interface GlassesEvent {
     data class ClearOffer(val sid: String?, val decline: Boolean) : GlassesEvent
     data class TranslationText(val view: TranslationView) : GlassesEvent
     data class StandbyText(val view: TranslationView) : GlassesEvent
+    data class StandbyAnswer(val content: AnswerContent) : GlassesEvent
+    data class StandbyAnswerPage(val ref: AnswerRef, val page: Int) : GlassesEvent
+    data class ClearStandbyAnswer(val ref: AnswerRef) : GlassesEvent
     data object ClearDisplay : GlassesEvent
     data class ForgetAnswer(val source: AnswerSource) : GlassesEvent
     data object RetryAudio : GlassesEvent

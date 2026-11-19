@@ -1,6 +1,6 @@
 {
   "name": "openrayneo-dsh",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Connect DSH Go voice tasks and tools to the local OpenRayneo glasses companion.",
   "license": "Apache-2.0",
   "type": "module",

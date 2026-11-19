@@ -23,6 +23,8 @@ internal class ConversationController(private val context: Context, private val 
     private val stopped: () -> Unit) {
     /** Unfinished ASR text of the current native wake (text, wake id), on the worker thread. */
     var partial: ((String, String) -> Unit)? = null
+    /** Live (realtime) record: the unfinished sentence of a channel, for the live transcript on the glasses. */
+    var livePartial: ((Int, String) -> Unit)? = null
     private val gate = VoiceGate()
     @Volatile private var gating = false
     /** Glasses speech flags (one per 20 ms frame) for always-on audio; ignored unless gating is on. */
@@ -256,10 +258,16 @@ internal class ConversationController(private val context: Context, private val 
                 else if (activeASR[channel] === round) { activeASR.remove(channel); if (liveBackfill) pauseLive("채널 $channel 이번 라운드 종료, 잠시 후 계속 따라잡습니다") }
                 drainAgent()
             }
-        } }, if (state.source != ConversationSource.NATIVE || wake == null) null else { text -> worker.post {
-            // Live partial for the native assistant page; the final sentence still goes through drainSentences.
-            if (token == generation && epoch == asrEpoch && state.running) partial?.invoke(text, wake)
-        } }, use = when (state.source) {
+        } }, when {
+            state.source == ConversationSource.NATIVE && wake != null -> { text -> worker.post {
+                // Live partial for the native assistant page; the final sentence still goes through drainSentences.
+                if (token == generation && epoch == asrEpoch && state.running) partial?.invoke(text, wake)
+            } }
+            state.source == ConversationSource.REALTIME && !replaying -> { text -> worker.post {
+                if (token == generation && epoch == asrEpoch && state.running) livePartial?.invoke(channel, text)
+            } }
+            else -> null
+        }, use = when (state.source) {
             ConversationSource.NATIVE -> AsrUse.WAKE
             ConversationSource.REALTIME -> AsrUse.LIVE
             else -> AsrUse.RECORD

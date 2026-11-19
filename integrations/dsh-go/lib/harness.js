@@ -3,7 +3,7 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 import { ApiError } from './api.js'
-import {markInstructed, nativeScope, nativeSession, sessionOptions} from './native-sessions.js'
+import {featureOf, markInstructed, nativeScope, nativeSession, sessionOptions} from './native-sessions.js'
 import modePrompts from './voice-modes.json' with {type: 'json'}
 
 const MAX_ACTIVE = 2
@@ -210,7 +210,7 @@ export function startHarness(ctx, config, api, lifetime, opening) {
         await abortable(reservation.ready, signal)
         ;({sessionId, instructed} = await nativeSession(ctx, config, opening, scope, signal))
       } else {
-        sessionId = (await ctx.sessionController.create(await sessionOptions(ctx, config))).sessionId
+        sessionId = (await ctx.sessionController.create(await sessionOptions(ctx, config, config.agentPreset, featureOf(request, facts)))).sessionId
       }
       signal.throwIfAborted()
       agent = ctx.agents.get(sessionId)
