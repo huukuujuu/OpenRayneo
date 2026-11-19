@@ -20,8 +20,14 @@ function abortable(promise, signal) {
   return Promise.race([promise, cancelled]).finally(() => signal.removeEventListener('abort', abort))
 }
 
-const MODE_LABEL = {native: '직접 깨움', realtime: '실시간 듣기', always_on: '종일 기록'}
-const ROUTE_SYSTEM = `${modePrompts.routing}\nJSON 객체만 반환: {"route":"wait 또는 hint 또는 agent"}`
+const MODE_LABEL = {native: '직접 깨움', realtime: '실시간 듣기', always_on: '종일 기록', live_answers: '실시간 답변'}
+const ROUTE_FORMAT = '\nJSON 객체만 반환: {"route":"wait 또는 hint 또는 agent"}'
+const ROUTE_SYSTEM = `${modePrompts.routing}${ROUTE_FORMAT}`
+const LIVE_ROUTE_SYSTEM = `${modePrompts.live_answers_routing}${ROUTE_FORMAT}`
+// The glasses' Live answers suggests replies to what others ask the wearer; other listening modes answer only the wearer.
+const prompts = facts => facts?.mode === 'live_answers'
+  ? {route: LIVE_ROUTE_SYSTEM, hint: modePrompts.live_answers_hint, agent: modePrompts.live_answers_agent}
+  : {route: ROUTE_SYSTEM, hint: modePrompts.hint, agent: modePrompts.agent}
 
 // The app sends the speech facts as JSON in request.context; older app builds sent prose, which stays as-is.
 function voiceFacts(request) {
@@ -45,7 +51,7 @@ function displayLimit(input) {
 // Instructions go only into a session's first turn; a reused native session already has them and its own history.
 function taskMessage(facts, input, firstTurn) {
   const lines = []
-  if (firstTurn) lines.push(`[RayNeo 지침] ${modePrompts.agent}${displayLimit(input)}`, '')
+  if (firstTurn) lines.push(`[RayNeo 지침] ${prompts(facts).agent}${displayLimit(input)}`, '')
   lines.push(`[${MODE_LABEL[facts.mode] ?? facts.mode} · ${facts.now}]`)
   if (input?.source !== 'NATIVE' && facts.previous_request?.length) {
     lines.push(`직전 요청: ${facts.previous_request.join(' ')}`)
@@ -193,9 +199,10 @@ export function startHarness(ctx, config, api, lifetime, opening) {
       // Listening modes hear everything around the user: decide first whether an answer is needed at all,
       // so ordinary talk never reaches the Agent or opens a DSH session.
       if (facts && request.kind === 'task' && request.input?.source && request.input.source !== 'NATIVE') {
-        const choice = /"route"\s*:\s*"(wait|hint|agent)"/.exec(await complete('route', ROUTE_SYSTEM, facts))?.[1] ?? 'wait'
+        const mode = prompts(facts)
+        const choice = /"route"\s*:\s*"(wait|hint|agent)"/.exec(await complete('route', mode.route, facts))?.[1] ?? 'wait'
         if (choice === 'wait') { await finishQuick(''); return }
-        if (choice === 'hint') { await finishQuick(await complete('hint', modePrompts.hint + displayLimit(request.input), facts)); return }
+        if (choice === 'hint') { await finishQuick(await complete('hint', mode.hint + displayLimit(request.input), facts)); return }
       }
       const scope = nativeScope(ctx, config, request)
       if (scope) {

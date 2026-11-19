@@ -347,8 +347,10 @@ internal class BridgeService : Service() {
         }; main.post(wait)
     }
     fun startConversation(mode: ConversationMode, source: ConversationSource, target: VoicePerson? = null) {
+        val fromGlasses = liveAnswersNext; liveAnswersNext = false
         check(state.link.phase == LinkPhase.FULL && !state.disconnecting) { "먼저 안경을 완전히 연결하세요" }
         conversations.start(mode, source, target, if (source == ConversationSource.NATIVE) voiceTransport.wakeId else null)
+        if (source == ConversationSource.REALTIME) liveAnswers = fromGlasses
     }
     private fun nativeWake() {
         notifyUI()
@@ -410,14 +412,17 @@ internal class BridgeService : Service() {
         if (request.source == ConversationSource.NATIVE && !request.backfill) {
             input.put("phoneId", identity.getString("phoneId")).put("conversationKey", identity.getString("conversationKey"))
         }
+        var context = request.context
         if (request.source == ConversationSource.REALTIME) {
+            // Live answers suggests replies to what others ask the wearer; the app's realtime hint answers only the wearer.
+            if (liveAnswers) context = runCatching { JSONObject(context).put("mode", "live_answers").toString() }.getOrDefault(context)
             latestRealtimeRequest = ++nextAnswer
             input.put("serviceInstance", serviceInstance).put("displayRevision", state.revision).put("realtimeRequest", latestRealtimeRequest)
         }
         // The glasses window shows only a few lines; the DSH plugin asks the Agent to fit them (0 = no limit).
         input.put("answerMaxChars", settings.read().optString("answerMaxChars").toIntOrNull() ?: DEFAULT_ANSWER_MAX_CHARS)
         // The relay's encrypted outbox accepts work even while DSH or the network is unavailable.
-        agent.harness.submit(request.text, request.context, input = input) { result ->
+        agent.harness.submit(request.text, context, input = input) { result ->
             result.fold({ answer -> deliverExternalVoice(request.text, answer, input) }, { conversations.report(it.message ?: "외부 Agent 작업이 완료되지 않음") })
         }
         return true
@@ -490,7 +495,7 @@ internal class BridgeService : Service() {
             val final = settings?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject()
             if (translate) final.put("source_language", "ko-KR").put("target_language", "en-US")
             dispatch(GlassesEvent.GlassesOffered(GlassesOffer(if (protocol == 0x13) PageMode.CAPTION else PageMode.PROMPT, sid, final.toString())))
-            val begin = { if (protocol == 0x13) startTranslation(captions = !translate, glassesPage = true) else startRealtimeHint() }
+            val begin = { if (protocol == 0x13) startTranslation(captions = !translate, glassesPage = true) else startRealtimeHint(fromGlasses = true) }
             if (conversations.state.running) {
                 onLog("안경 메뉴의 $feature 요청: ${conversations.state.source.title} 기록을 멈추고 시작 (남은 전사는 나중에 보충)")
                 if (conversations.state.source == ConversationSource.ALWAYS_ON) resumeAlwaysOn = conversations.state.mode.takeUnless { conversations.state.stopping }
@@ -557,13 +562,19 @@ internal class BridgeService : Service() {
     fun stopTranslation() { translator.stop(); if (state.intent == DisplayIntent.Translation) dispatch(GlassesEvent.PauseDisplay) }
     fun openStandby() = dispatch(GlassesEvent.OpenStandby)
     /** One-tap realtime hint: open the window and start the realtime dual-mic record that actually processes speech. */
-    fun startRealtimeHint() {
+    /** The running realtime record was opened by the glasses' Live answers menu (its own prompts in DSH), not the app button. */
+    private var liveAnswers = false
+    /** Main thread: the next REALTIME record is the glasses' Live answers. */
+    private var liveAnswersNext = false
+    fun startRealtimeHint(fromGlasses: Boolean = false) {
         check(state.link.phase == LinkPhase.FULL && !state.disconnecting) { "먼저 안경을 완전히 연결하세요" }
         if (conversations.state.running && conversations.state.source == ConversationSource.REALTIME) {
+            liveAnswers = fromGlasses
             conversationOwnsDisplay = true; dispatch(GlassesEvent.OpenStandby); return
         }
         check(!conversations.state.running) { "다른 기록(${conversations.state.source.title})이 실행 중입니다. 기록 탭에서 먼저 중지하세요" }
         translator.stop()
+        liveAnswersNext = fromGlasses
         startConversation(ConversationMode.DAILY, ConversationSource.REALTIME)
     }
     fun retryAudio() {

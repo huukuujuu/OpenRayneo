@@ -2,10 +2,10 @@
 
 OpenRayneo owns the glasses connection, audio storage, ASR, local speaker processing and record summaries.
 The phone's external Agent decides whether to wait, answer, call tools or run a workflow.
-Current delivery: plugin **0.1.9** with the current Android build. From 0.1.9 the app sends the voice facts as JSON and the plugin decides
+Current delivery: plugin **0.1.10** with the current Android build. 0.1.10 adds the glasses' Live answers mode (`mode: live_answers`): its own routing, hint and agent prompts suggest replies to what other people ask the wearer, while the app's realtime hint keeps answering only the wearer. From 0.1.9 the app sends the voice facts as JSON and the plugin decides
 whether an answer is needed: realtime and all-day/meeting speech first goes through a short wait/hint/agent check, so ordinary talk
 opens no DSH session. Agent turns show each utterance once as `speaker: text`; instructions are sent only on a session's first turn.
-Use 0.1.9 with current app builds (0.1.8 would answer every utterance); 0.1.9 still accepts the older app's prose context.
+Use 0.1.10 with current app builds (0.1.9 treats Live answers like the realtime hint; 0.1.8 would answer every utterance); it still accepts the older app's prose context.
 Architecture and current limitations live in the workspace `.arch/`; operations live in `docs/runbook.md`.
 
 ## Install and connect
@@ -16,7 +16,7 @@ Install this directory once:
 dsh plugin --profile web add /absolute/path/openrayneo-dsh
 ```
 
-For a packaged update, replace the installed plugin directory with `openrayneo-dsh-0.1.9.tgz` contents.
+For a packaged update, replace the installed plugin directory with `openrayneo-dsh-0.1.10.tgz` contents.
 The npm archive has a top-level `package/`; use `--strip-components=1` when extracting into that directory.
 Update the companion APK and restart the DSH engine after replacing plugin code.
 Existing connection credentials and saved phone records remain.
