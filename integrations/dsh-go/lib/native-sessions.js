@@ -42,9 +42,10 @@ export async function sessionOptions(ctx, config, preset = config.agentPreset, f
     return options
   }
   const registry = ctx.get('workspaceRegistry')
-  if (!registry) return {...options, cwd}
+  if (!registry) { ctx.logger?.warn?.(`DSH 작업 공간 서비스가 없어 폴더만 지정합니다: ${cwd}`); return {...options, cwd} }
   try {
     const workspace = await registry.resolveByPath(cwd) ?? await registry.create(cwd)
+    ctx.logger?.info?.(`OpenRayneo 세션 폴더: ${cwd} (작업 공간 ${workspace.id})`)
     return {...options, workspaceId: workspace.id}
   } catch (error) {
     ctx.logger?.warn?.(`OpenRayneo 폴더를 DSH 작업 공간으로 등록하지 못했습니다: ${cwd} (${error.message})`)

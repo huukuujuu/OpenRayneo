@@ -6,7 +6,10 @@ import { ApiError } from './api.js'
 import {featureOf, markInstructed, nativeScope, nativeSession, sessionOptions} from './native-sessions.js'
 import modePrompts from './voice-modes.json' with {type: 'json'}
 
-const MAX_ACTIVE = 2
+// Listening modes send one request per heard sentence and most end in one short model call:
+// a small limit made answers wait behind the classification of later sentences.
+const MAX_ACTIVE = 6
+const MAX_LISTENING_SESSIONS = 32
 
 function textOf(content) {
   if (typeof content === 'string') return content
@@ -26,8 +29,21 @@ const ROUTE_SYSTEM = `${modePrompts.routing}${ROUTE_FORMAT}`
 const LIVE_ROUTE_SYSTEM = `${modePrompts.live_answers_routing}${ROUTE_FORMAT}`
 // The glasses' Live answers suggests replies to what others ask the wearer; other listening modes answer only the wearer.
 const prompts = facts => facts?.mode === 'live_answers'
-  ? {route: LIVE_ROUTE_SYSTEM, hint: modePrompts.live_answers_hint, agent: modePrompts.live_answers_agent}
-  : {route: ROUTE_SYSTEM, hint: modePrompts.hint, agent: modePrompts.agent}
+  ? {routing: modePrompts.live_answers_routing, route: LIVE_ROUTE_SYSTEM, hint: modePrompts.live_answers_hint, agent: modePrompts.live_answers_agent}
+  : {routing: modePrompts.routing, route: ROUTE_SYSTEM, hint: modePrompts.hint, agent: modePrompts.agent}
+// One call decides and, for a hint, already answers: the hint no longer waits for a second model call.
+function decideSystem(mode, input) {
+  return `${mode.routing}\n\n[hint일 때 answer 값의 작성 규칙: 아래 규칙은 answer 문자열의 내용에만 적용된다]\n${mode.hint}${displayLimit(input)}\n\n` +
+    '응답 전체는 다른 글 없이 JSON 객체 하나다: {"route":"wait 또는 hint 또는 agent","answer":"route가 hint일 때만 안경에 띄울 답, 그 외나 답할 것이 없으면 빈 문자열"}'
+}
+function parseDecision(text) {
+  const json = /\{[\s\S]*\}/.exec(text)?.[0]
+  try {
+    const value = JSON.parse(json)
+    if (['wait', 'hint', 'agent'].includes(value?.route)) return {route: value.route, answer: typeof value.answer === 'string' ? value.answer.trim() : ''}
+  } catch {}
+  return {route: /"route"\s*:\s*"(wait|hint|agent)"/.exec(text)?.[1] ?? 'wait', answer: ''}
+}
 
 // The app sends the speech facts as JSON in request.context; older app builds sent prose, which stays as-is.
 function voiceFacts(request) {
@@ -63,6 +79,16 @@ function taskMessage(facts, input, firstTurn) {
 
 export function startHarness(ctx, config, api, lifetime, opening) {
   const active = new Map()
+  // One DSH session per listening record and feature (in memory): agent answers of a Live answers or realtime
+  // record continue one conversation instead of opening a new session for every answer.
+  const listening = new Map()
+  const listeningBusy = new Set()
+  // Older engines may lack session state(): then only a live agent counts as an existing session.
+  async function sessionAlive(sessionId, signal) {
+    if (typeof ctx.sessionController.state !== 'function') return Boolean(ctx.agents.get(sessionId))
+    try { await ctx.sessionController.state({sessionId}, signal); return true }
+    catch (error) { if (signal.aborted || error.code !== 'session/not-found') throw error; return false }
+  }
   const seen = new Set()
   const results = new Map()
   const queues = new Map()
@@ -200,17 +226,39 @@ export function startHarness(ctx, config, api, lifetime, opening) {
       // so ordinary talk never reaches the Agent or opens a DSH session.
       if (facts && request.kind === 'task' && request.input?.source && request.input.source !== 'NATIVE') {
         const mode = prompts(facts)
-        const choice = /"route"\s*:\s*"(wait|hint|agent)"/.exec(await complete('route', mode.route, facts))?.[1] ?? 'wait'
-        if (choice === 'wait') { await finishQuick(''); return }
-        if (choice === 'hint') { await finishQuick(await complete('hint', mode.hint + displayLimit(request.input), facts)); return }
+        const decision = parseDecision(await complete('route', decideSystem(mode, request.input), facts))
+        if (decision.route === 'wait') { await finishQuick(''); return }
+        if (decision.route === 'hint') {
+          await finishQuick(decision.answer || await complete('hint', mode.hint + displayLimit(request.input), facts))
+          return
+        }
       }
       const scope = nativeScope(ctx, config, request)
+      const feature = featureOf(request, facts)
+      const listenKey = !scope && facts && request.input?.recordId
+        ? JSON.stringify([request.input.recordId, feature, config.agentPreset || '']) : null
       if (scope) {
         reservation = reserve(scope.key)
         await abortable(reservation.ready, signal)
         ;({sessionId, instructed} = await nativeSession(ctx, config, opening, scope, signal))
+      } else if (listenKey && !listeningBusy.has(listenKey)) {
+        // One answer at a time uses the record's session; while it is busy a later answer gets a one-off session
+        // instead of waiting (waiting would hold a request slot and stall the classification of later sentences).
+        listeningBusy.add(listenKey)
+        reservation = {release: () => listeningBusy.delete(listenKey)}
+        const known = listening.get(listenKey)
+        if (known) {
+          if (await sessionAlive(known.sessionId, signal)) ({sessionId, instructed} = known)
+          else listening.delete(listenKey)
+        }
+        if (!sessionId) {
+          sessionId = (await ctx.sessionController.create(await sessionOptions(ctx, config, config.agentPreset, feature))).sessionId
+          listening.set(listenKey, {sessionId, instructed: false})
+          while (listening.size > MAX_LISTENING_SESSIONS) listening.delete(listening.keys().next().value)
+          ctx.logger?.info?.(`OpenRayneo ${feature} 세션 생성: ${sessionId}`)
+        }
       } else {
-        sessionId = (await ctx.sessionController.create(await sessionOptions(ctx, config, config.agentPreset, featureOf(request, facts)))).sessionId
+        sessionId = (await ctx.sessionController.create(await sessionOptions(ctx, config, config.agentPreset, feature))).sessionId
       }
       signal.throwIfAborted()
       agent = ctx.agents.get(sessionId)
@@ -237,6 +285,7 @@ export function startHarness(ctx, config, api, lifetime, opening) {
       }, signal)
       // Only a queued prompt counts: a turn aborted before this point must not leave the session without instructions.
       if (scope && facts && !instructed) await markInstructed(opening, scope, sessionId)
+      if (listenKey && !instructed && listening.get(listenKey)?.sessionId === sessionId) listening.set(listenKey, {sessionId, instructed: true})
       agent = ctx.agents.get(sessionId)
       if (!agent) throw new Error('DSH agent was not created')
       await agent.whenIdle()

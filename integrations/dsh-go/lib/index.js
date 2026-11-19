@@ -5,7 +5,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createApi } from './api.js'
 import { startHarness } from './harness.js'
-import {nativeSessionDomain} from './native-sessions.js'
+import {nativeSessionDomain, sessionFolder} from './native-sessions.js'
+import pkg from '../package.json' with {type: 'json'}
 
 export const name = 'openrayneo'
 export const inject = ['tools', 'sessionController', 'agents', 'llm', 'agentDefaultModel', 'storageDomain']
@@ -116,6 +117,8 @@ export async function apply(ctx, config) {
     execute: async (args, exec) => boundedResult(await callTool(args.name, args.arguments, exec.signal)),
   }))
 
+  // Shows in the DSH engine log which plugin code is loaded and where its sessions go (the engine keeps old code until restarted).
+  ctx.logger?.info?.(`OpenRayneo 플러그인 ${pkg.version} 시작 · 세션 폴더 ${sessionFolder(config) || 'DSH 기본'}`)
   const opening = config.receiveVoiceTasks ? await ctx.storageDomain.open(nativeSessionDomain) : undefined
   const harness = startHarness(ctx, config, api, lifetime.signal, opening)
   ctx.effect(() => () => {
@@ -161,7 +164,7 @@ export async function apply(ctx, config) {
       const state = await api('/v1/status', {signal})
       const link = {FULL: '완전 연결', DISCONNECTED: '미연결', BLE_ONLY: 'BLE 전용 연결',
         SCANNING: '스캔 중', CONNECTING: '연결 중', RETRY_WAIT: '재연결 대기', CLOSING: '연결 해제 중'}[state.link] ?? '상태 알 수 없음'
-      return toast(`OpenRayneo 온라인 · 안경 ${link} · ${state.conversationRunning ? '음성 실행 중' : '음성 대기'}`)
+      return toast(`v${pkg.version} · 안경 ${link} · ${state.conversationRunning ? '음성 실행 중' : '음성 대기'}`)
     }, 10_000))
     scoped.dshGo.on('send-glasses', action('안경으로 보내기', async (scope, signal) => {
       const text = typeof scope.message === 'string' ? scope.message : ''
