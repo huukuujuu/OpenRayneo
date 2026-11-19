@@ -70,7 +70,7 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
         Note("켜면 고른 기기 내장 모델을 미리 올려 두어 깨울 때 불러오기 지연(Nemotron은 수 초)이 없습니다. 휴대폰 메모리를 계속 차지합니다(Nemotron 약 700MB, SenseVoice 약 250MB). 끄면 1분 동안 쓰지 않을 때 내립니다.")
         SectionLabel("Bailian ASR")
         VoiceField(model, "asrKey", "API Key", secret = true)
-        VoiceField(model, "asrUrl", "WSS 주소", "wss://dashscope.aliyuncs.com/api-ws/v1/inference")
+        VoiceField(model, "asrUrl", "WSS 주소 (비우면 Bailian 국제 기본값)", AppSettings.DEFAULT_ASR_URL)
         VoiceField(model, "asrModel", "모델", "qwen-audio-3.1-asr-flash-message")
         val asrLanguages = drafts["asrLanguage"].orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         fun toggleLanguage(code: String, on: Boolean) {

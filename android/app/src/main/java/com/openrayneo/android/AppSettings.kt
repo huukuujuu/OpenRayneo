@@ -41,7 +41,10 @@ internal class AppSettings(context: Context) {
 
     companion object {
         const val DEFAULT_MODEL_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-        const val DEFAULT_MODEL_NAME = "qwen-plus"
+        // Summaries, translation and hints are short prompts: the flash tier costs a fraction of qwen-plus.
+        const val DEFAULT_MODEL_NAME = "qwen3.7-flash"
+        /** International (Singapore) endpoint, matching the international API keys used with DEFAULT_MODEL_URL. */
+        const val DEFAULT_ASR_URL = "wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference"
     }
 
     fun save(settings: JSONObject) {

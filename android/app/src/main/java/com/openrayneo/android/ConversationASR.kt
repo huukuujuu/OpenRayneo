@@ -18,7 +18,7 @@ internal class ConversationASR(config: JSONObject,
     private val task = UUID.randomUUID().toString()
     private val model = config.optString("asrModel").ifBlank { "qwen-audio-3.1-asr-flash-message" }
     private val key = config.optString("asrKey").trim()
-    private val address = config.optString("asrUrl").ifBlank { "wss://dashscope.aliyuncs.com/api-ws/v1/inference" }
+    private val address = config.optString("asrUrl").ifBlank { AppSettings.DEFAULT_ASR_URL }
     // Comma-separated ISO codes (e.g. "ko,en"); blank keeps the service's automatic language detection.
     private val languages = config.optString("asrLanguage").split(',').map { it.trim() }.filter { it.isNotEmpty() }
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
