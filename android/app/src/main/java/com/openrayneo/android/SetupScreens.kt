@@ -4,6 +4,8 @@ package com.openrayneo.android
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -548,6 +550,30 @@ internal fun DiagnosticsScreen(model: AppModel, actions: UiActions) {
                 }
             ) {
                 Text("로그 복사")
+            }
+            TextButton(
+                onClick = {
+                    // Reading the log file waits for pending writes: off the main thread, then the share sheet on main.
+                    val app = context.applicationContext
+                    kotlin.concurrent.thread(name = "log-share") {
+                        val file = runCatching {
+                            val text = model.service().logText()
+                            java.io.File(app.cacheDir, "shared-logs").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+                                .resolve("openrayneo-log-${java.time.LocalDateTime.now().withNano(0).toString().replace(':', '-')}.txt")
+                                .apply { writeText(text) }
+                        }
+                        androidx.core.content.ContextCompat.getMainExecutor(context).execute {
+                            model.attempt {
+                                val uri = FileProvider.getUriForFile(app, "${app.packageName}.logs", file.getOrThrow())
+                                context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                                    .putExtra(Intent.EXTRA_STREAM, uri).putExtra(Intent.EXTRA_SUBJECT, "OpenRayneo 로그")
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "로그 보내기"))
+                            }
+                        }
+                    }
+                }
+            ) {
+                Text("로그 공유")
             }
         }
         ContentCard { Note(s.logs.joinToString("\n").ifBlank { "연결 로그 없음" }) }

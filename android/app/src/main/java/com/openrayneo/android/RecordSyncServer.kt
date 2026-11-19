@@ -18,7 +18,9 @@ import java.util.concurrent.TimeUnit
 
 /** Encounter transport adapter. Device tools remain exclusively on the loopback Agent API. */
 internal class RecordSyncServer(private val settings: AppSettings, private val repository: ConversationRepository,
-    private val audio: MeetingAudioStore, private val main: Handler, private val changed: () -> Unit) {
+    private val audio: MeetingAudioStore, private val main: Handler, private val changed: () -> Unit,
+    /** Newest bytes of the app log; served to the PC so a device test can be read without copying it by hand. */
+    private val logs: (Int) -> String = { "" }) {
     // Accept runs on its own thread; each accepted socket needs a slot, so idle connections cannot pile up past the pool.
     private val network = Executors.newFixedThreadPool(MAX_CLIENTS)
     private val slots = Semaphore(MAX_CLIENTS)
@@ -102,6 +104,11 @@ internal class RecordSyncServer(private val settings: AppSettings, private val r
                 if (record.audioSamples == 0L) { json(404, JSONObject().put("error", "사용 가능한 오디오 없음")); return }
                 output.write("HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: ${44 + record.audioSamples * 2 * record.audioChannels}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".toByteArray())
                 audio.exportWav(record.audioId ?: record.id, record.audioSamples, output); output.flush()
+            } else if (request[0] == "GET" && path == "/v1/sync/logs") {
+                val args = request[1].substringAfter('?', "").split('&').associate { row -> row.substringBefore('=') to URLDecoder.decode(row.substringAfter('=', ""), "UTF-8") }
+                val bytes = logs((args["bytes"]?.toIntOrNull() ?: 300_000).coerceIn(1_000, 2_000_000)).toByteArray(Charsets.UTF_8)
+                output.write("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".toByteArray())
+                output.write(bytes); output.flush()
             } else json(404, JSONObject().put("error", "해당 동기화 엔드포인트가 없음"))
         } catch (error: Exception) { if (!client.isClosed) runCatching { json(400, JSONObject().put("error", error.message ?: "동기화가 완료되지 않음")) } }
         finally { deadline.cancel(false) }

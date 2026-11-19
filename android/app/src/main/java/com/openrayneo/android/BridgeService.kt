@@ -16,6 +16,9 @@ internal class BridgeService : Service() {
     val observers = mutableSetOf<() -> Unit>()
     val devices = linkedMapOf<String, RayneoConnection.Device>()
     val logs = ArrayDeque<String>()
+    private val logFile by lazy { AppLogFile(this) }
+    /** The newest part of the persisted app log (survives restarts), for sharing or the PC log endpoint. */
+    fun logText(maxBytes: Int = 2_000_000): String = logFile.tail(maxBytes)
     lateinit var settings: AppSettings; private set
     lateinit var conversations: ConversationController; private set
     lateinit var voiceTransport: GlassesVoiceTransport; private set
@@ -131,7 +134,7 @@ internal class BridgeService : Service() {
                     dispatch(GlassesEvent.StandbyText(TranslationView(LiveTranslator.clip(segment.text, 80), "듣는 중 · 답이 필요하면 여기에 표시됩니다")))
             }, ::resumeBackground)
         conversations.partial = { text, wake -> main.post { voiceTransport.partial(text, wake) } }
-        recordSync = RecordSyncServer(settings, conversations.repository, conversations.recordings, main, ::notifyUI)
+        recordSync = RecordSyncServer(settings, conversations.repository, conversations.recordings, main, ::notifyUI, ::logText)
         if (settings.read().optBoolean("recordSyncEnabled")) recordSync.start()
         voiceAudio = PromptAudio { left, right ->
             if (virtualVoice.active) return@PromptAudio
@@ -735,6 +738,7 @@ internal class BridgeService : Service() {
     }
     private fun onLog(text: String) {
         android.util.Log.i("OpenRayneo", text)
+        logFile.append(text)
         logs.addLast("${LocalTime.now().withNano(0)} $text")
         while (logs.size > 300) logs.removeFirst()
         if (!dispatching) notifyUI()
@@ -838,6 +842,7 @@ internal class BridgeService : Service() {
         destroyed = true; observers.clear(); main.removeCallbacksAndMessages(null)
         navigation.observers.remove(navigationObserver)
         translator.close(); virtualVoice.close(); voiceMemo.close(); agent.close(); codex.close(); conversations.close(); agentServer.close(); recordSync.close(); requests.close(); content.close(); display.reset(); audio.close(); voiceAudio.close(); supervisor.close()
+        logFile.close()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

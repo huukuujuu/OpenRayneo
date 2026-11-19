@@ -139,6 +139,7 @@ peer 주소가 바뀌면 명시적으로 `resetCursor:true`를 주고 0부터 �
 ## 6. 요청 시 오디오
 
 `GET /v1/sync/audio?recordId=<URL 인코딩된 UUID>`는 `audio/wav`를 돌려준다.
+`GET /v1/sync/logs?bytes=<1000~2000000, 기본 300000>`은 같은 토큰으로 휴대폰 앱 로그(내부 파일 `logs/app.log` + 이전 파일, 각 1MB 회전)의 최신 부분을 `text/plain; charset=utf-8`로 돌려준다. 안경 신호 본문, 인식/번역 오류와 상태가 들어 있으므로 기록과 같은 신뢰 범위로 다룬다.
 쓸 수 있는 오디오가 없으면 404, 아직 오디오를 쓰는 중이면 409다. 알려진 recordId로만 해석하며 임의 파일 경로를 읽을 수 없다.
 
 WAV는 16 kHz PCM16, 실제 mono/stereo이며 2채널은 frame 단위로 인터리브된다.
