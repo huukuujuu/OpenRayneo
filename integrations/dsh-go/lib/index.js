@@ -14,6 +14,7 @@ export const Config = z.object({
   tokenEnv: z.string().role('credential-ref').default('OPENRAYNEO_TOKEN').volatile().description('OpenRayneo access token / 로컬 액세스 토큰 자격 증명 이름'),
   receiveVoiceTasks: z.boolean().default(true).description('Receive voice tasks / 안경 음성 작업 수신'),
   agentPreset: z.string().default('').description('Optional DSH agent preset / 선택 사항: DSH 프리셋'),
+  sessionFolder: z.string().default('OpenRayneo').description('Folder the OpenRayneo DSH sessions work in; relative to the folder DSH was started in, ~ is home, empty keeps the DSH default / OpenRayneo DSH 세션 작업 폴더 (상대 경로는 DSH를 실행한 폴더 기준, ~는 홈, 비우면 DSH 기본)'),
 })
 
 function clip(text, length) { return Array.from(text).slice(0, length).join('') }

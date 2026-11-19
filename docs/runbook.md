@@ -5,7 +5,7 @@
 ## 현재 로컬 후보
 
 - Android: [37 release](../android/app/build/outputs/candidates/android37-1.2.0-beta.4/OpenRayneo-v37-release.apk), [37 debug](../android/app/build/outputs/candidates/android37-1.2.0-beta.4/OpenRayneo-v37-debug.apk), 버전 `1.2.0-beta.4`. CI 버전 이름은 `1.(run-23).0`, 업로드 파일 이름은 `openrayneo-<버전>-<sha7>.apk`.
-- DSH: 플러그인 0.1.10(안경 Live answers 전용 프롬프트 포함, 0.1.9는 Live answers를 실시간 힌트처럼 처리). `integrations/dsh-go`에서 `npm pack --ignore-scripts`로 tgz를 만든다. 현재 앱은 음성 맥락을 JSON으로만 보내므로 0.1.9 이상이 필요하다(0.1.8은 모든 발화에 답한다). 이전 0.1.8 tgz는 `outputs/candidates/android37-1.2.0-beta.4/`에 있다.
+- DSH: 플러그인 0.1.11(OpenRayneo 세션을 모두 `sessionFolder` 폴더에 만든다. 기본 `OpenRayneo`는 DSH를 실행한 폴더 아래(0.1.10에서 올리면 네이티브 대화가 새 폴더에서 새로 시작), `~/...`나 절대 경로도 되고 비우면 DSH 기본 폴더. 0.1.10부터 안경 Live answers 전용 프롬프트, 0.1.9는 Live answers를 실시간 힌트처럼 처리). `integrations/dsh-go`에서 `npm pack --ignore-scripts`로 tgz를 만든다. 현재 앱은 음성 맥락을 JSON으로만 보내므로 0.1.9 이상이 필요하다(0.1.8은 모든 발화에 답한다). 이전 0.1.8 tgz는 `outputs/candidates/android37-1.2.0-beta.4/`에 있다.
 - Android 되돌리기용: [36 release](../android/app/build/outputs/candidates/android36-1.2.0-beta.3/OpenRayneo-v36-release.apk). 같은 서명으로 덮어 설치하면 설정과 기록이 유지되며, 개인 저장소와 Keystore도 함께 유지된다.
 
 이것들은 개발 PC의 산출물이다. 현재 소스 빌드는 이 문서의 명령을 기준으로 하며, 저장소에는 설치 파일, 다운로드한 모델, 개인 키를 커밋하지 않는다.
@@ -84,7 +84,7 @@ npm pack --ignore-scripts --pack-destination <output-directory>
 
 ```sh
 mkdir -p "$HOME/.dsh/dsh-go/plugins/openrayneo-dsh"
-tar -xzf /sdcard/Download/openrayneo-dsh-0.1.10.tgz --strip-components=1 -C "$HOME/.dsh/dsh-go/plugins/openrayneo-dsh"
+tar -xzf /sdcard/Download/openrayneo-dsh-0.1.11.tgz --strip-components=1 -C "$HOME/.dsh/dsh-go/plugins/openrayneo-dsh"
 dsh plugin --profile web add "$HOME/.dsh/dsh-go/plugins/openrayneo-dsh"
 ```
 
