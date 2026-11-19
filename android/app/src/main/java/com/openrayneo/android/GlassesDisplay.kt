@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.openrayneo.android
 
-import android.os.SystemClock
 import org.json.JSONObject
 import java.util.UUID
 
@@ -35,13 +34,8 @@ internal class GlassesDisplay(
     private var pending: PageContent? = null
     private var lastWritten: PageContent? = null
     private val recentAudioSequences = ArrayDeque<Long>()
-    // CAPTION: one screen that is replaced, never appended. A finished sentence (with its translation) stays at least
-    // CAPTION_HOLD_MS before the next screen; only the latest partial may be skipped.
-    private val finals = ArrayDeque<Pair<String, String>>()
-    private var lastFinal = -1L
-    private var lastPartial = ""
-    private var captionHoldUntil = 0L
-    private val captionHold = Runnable { flush() }
+    // CAPTION: one screen that is replaced, never appended; only the newest screen matters.
+    private var lastScreen = ""
     private var audioReported = false
     private var unmatchedAudioReported = false
     /** Non-audio frames the glasses send inside our session (e.g. Live answers), logged until the flow is mapped. */
@@ -54,7 +48,7 @@ internal class GlassesDisplay(
         reset()
         validate(next.mode, next.content)
         session = next
-        next.offer?.let { stage(next.mode, next.content); adopt(next, it); return }
+        next.offer?.let { pending = next.content; adopt(next, it); return }
         val id = UUID.randomUUID().toString().replace("-", "")
         sid = id; pending = next.content
         val body = JSONObject().put("sid", id).put("trigger", 1).put("force", false).put("code", 0)
@@ -95,16 +89,10 @@ internal class GlassesDisplay(
         val active = session ?: return
         if (active.id != id || failed) return
         validate(active.mode, content)
-        stage(active.mode, content)
+        pending = content
         flush()
     }
 
-    private fun stage(mode: PageMode, content: PageContent) {
-        if (mode == PageMode.CAPTION && content.final && content.text.isNotBlank() && content.serial != lastFinal) {
-            finals.addLast(content.text to content.answer.orEmpty()); lastFinal = content.serial; lastPartial = ""
-        }
-        pending = content
-    }
 
     fun receive(frame: ProtocolCodec.Frame, source: String) {
         if (frame.protocol == 0x14) {
@@ -239,26 +227,18 @@ internal class GlassesDisplay(
      * mode 1 (classic bilingual) stacks lines and shows source or translation depending on head pitch.
      */
     private fun flushCaption(active: PageSession, id: String, content: PageContent) {
-        val partial = if (content.final) "" else content.text
-        // Falling behind speech: drop the oldest finished sentences, keep the newest two.
-        while (finals.size > 2) finals.removeFirst()
-        val waiting = finals.isNotEmpty() || partial.isNotBlank() && partial != lastPartial
-        val now = SystemClock.uptimeMillis()
-        if (waiting && now < captionHoldUntil) { cancel(captionHold); schedule(captionHold, captionHoldUntil - now); return }
-        val screen = when {
-            finals.isNotEmpty() -> finals.removeFirst().let { (source, target) ->
-                captionHoldUntil = now + CAPTION_HOLD_MS
-                captionScreen(source, if (content.key == CAPTION_TRANSLATED) target else "")
-            }
-            waiting -> { lastPartial = partial; captionScreen(partial, "") }
-            else -> { pending = null; lastWritten = content; signal(active.id, PageSignal.Written(content)); return }
-        }
+        pending = null
+        val screen = captionScreen(content.text, content.answer.orEmpty())
+        if (screen.isBlank() || screen == lastScreen) { lastWritten = content; signal(active.id, PageSignal.Written(content)); return }
+        lastScreen = screen
         writing = true
         send(0x13, 5, JSONObject().put("sid", id).put("mode", 3).put("status", 0)
             .put("content", JSONObject().put("source_transcript", screen).put("keyword_info", "").put("label", 0))) { result ->
             if (sid != id) return@send
             writing = false
-            if (result.isSuccess) flush() else fail("자막 전송 실패: ${result.exceptionOrNull()?.message}")
+            if (result.isFailure) { fail("자막 전송 실패: ${result.exceptionOrNull()?.message}"); return@send }
+            lastWritten = content; signal(active.id, PageSignal.Written(content))
+            flush()
         }
     }
 
@@ -280,10 +260,10 @@ internal class GlassesDisplay(
     }
     fun reset() {
         generation++
-        cancel(timeout); cancel(settle); cancel(captionHold); captionHoldUntil = 0L; sessionSignals = 0
+        cancel(timeout); cancel(settle); sessionSignals = 0
         sid?.let { closedSids.addLast(it); while (closedSids.size > 8) closedSids.pollFirst() }
         session = null; sid = null; audioAccepted = false; accepted = false; settled = false; writing = false; failed = false
-        navigationFrameSent = false; pending = null; lastWritten = null; finals.clear(); lastFinal = -1L; lastPartial = ""
+        navigationFrameSent = false; pending = null; lastWritten = null; lastScreen = ""
         recentAudioSequences.clear(); audioReported = false; unmatchedAudioReported = false
     }
     private fun protocol(mode: PageMode) = mode.protocol
@@ -295,8 +275,6 @@ internal class GlassesDisplay(
         catch (error: Exception) { completion(Result.failure(error)) }
     }
 }
-
-private const val CAPTION_HOLD_MS = 4_000L
 
 internal object NavigationFrame {
     // A maneuver is always a complete frame. Partial ASR results must not share this path.

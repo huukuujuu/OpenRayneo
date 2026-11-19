@@ -10,6 +10,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -39,13 +40,16 @@ internal class LiveTranslator(
     private var fullLines = false
 
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+        // Captions are shown in order: one stalled sentence must not hold the later ones for long.
+        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).callTimeout(12, TimeUnit.SECONDS).build()
     private val translations = Executors.newSingleThreadExecutor()
+    /** Glasses captions: finished sentences translate in parallel and are shown in order. */
+    private val lineTranslations = Executors.newFixedThreadPool(LINE_WORKERS)
     private var config = JSONObject()
     @Volatile private var generation = 0
     private var asr: SpeechRound? = null
     private var resampler = ConversationAudio()
-    @Volatile private var call: Call? = null
+    private val calls = ConcurrentHashMap.newKeySet<Call>()
     // Main-thread display state.
     private val history = ArrayDeque<Pair<String, String>>()
     @Volatile private var latestFinal = 0L
@@ -56,6 +60,13 @@ internal class LiveTranslator(
     private var committed = ""
     private var pieceAt = 0L
     private var restartTask: Runnable? = null
+    // Glasses captions (main thread): sentence numbers, translations waiting for an earlier one, the early translation.
+    private var lineSeq = 0L
+    private var shownSeq = 0L
+    private val ready = HashMap<Long, Pair<String, String>>()
+    private var earlyBusy = false
+    private var earlyLength = 0
+    private var earlySeq = 0L
 
     /** Throws with a user-facing message when ASR or the translation model is not configured. */
     fun validate(settings: JSONObject, captions: Boolean = false) {
@@ -82,6 +93,7 @@ internal class LiveTranslator(
             resampler = ConversationAudio()
         }
         history.clear(); latestFinal = 0; sourceLine = ""; targetLine = ""; failures = 0; committed = ""; pieceAt = 0L
+        lineSeq = 0L; shownSeq = 0L; ready.clear(); earlyBusy = false; earlyLength = 0; earlySeq = 0L
         status = listening()
         openASR()
         changed()
@@ -97,7 +109,7 @@ internal class LiveTranslator(
             asr?.cancel(); asr = null
         }
         restartTask?.let(main::removeCallbacks); restartTask = null
-        call?.cancel()
+        calls.forEach { it.cancel() }
         if (wasActive || reason != null) { status = reason ?: OFF; changed() }
     }
 
@@ -117,7 +129,7 @@ internal class LiveTranslator(
     }
 
     /** Must be called on the main thread (service onDestroy). */
-    fun close() { stop(); translations.shutdownNow(); http.dispatcher.executorService.shutdown() }
+    fun close() { stop(); translations.shutdownNow(); lineTranslations.shutdownNow(); http.dispatcher.executorService.shutdown() }
 
     private fun openASR() {
         val token: Int
@@ -167,8 +179,9 @@ internal class LiveTranslator(
     private fun interim(token: Int, text: String) {
         if (token != generation || !active || misheard(text)) return
         heard()
-        // The glasses' caption screen: a partial is shown as it is, translation waits for the finished sentence.
-        if (fullLines) { sourceLine = text; render(); return }
+        // The glasses' caption screen: the partial is the live line under the latest translation;
+        // long speech is translated early so the translation does not wait for the end of the sentence.
+        if (fullLines) { sourceLine = text; render(); if (!captions) translateEarly(token, text); return }
         if (captions) { targetLine = text; render(); return }
         sourceLine = text
         render()
@@ -197,8 +210,10 @@ internal class LiveTranslator(
         // Neither Korean nor English (typically noise or Korean misread as Chinese): never show or translate it.
         if (misheard(text)) { committed = ""; pieceAt = 0L; return }
         if (fullLines) {
-            committed = ""; pieceAt = 0L
-            if (captions) { sourceLine = text; targetLine = ""; finals++; render(final = true) } else translateLine(token, text)
+            committed = ""; pieceAt = 0L; earlyLength = 0
+            // Transcription only: the finished sentence moves to the top line and the live line empties.
+            if (captions) { sourceLine = ""; targetLine = text; finals++; render(final = true) }
+            else { sourceLine = text; render(); translateLine(token, text) }
             return
         }
         if (captions) { sourceLine = text; targetLine = ""; finals++; render(); return }
@@ -211,13 +226,14 @@ internal class LiveTranslator(
         translatePiece(token, rest)
     }
 
-    /** Every finished sentence is translated and shown in order (single-thread executor): none is skipped. */
+    /** Every finished sentence is translated (up to [LINE_WORKERS] at once) and shown in order: none is skipped. */
     private fun translateLine(token: Int, text: String) {
+        val seq = ++lineSeq
         val from = if (isKorean(text)) "Korean" else "English"
         val to = if (from == "Korean") "English" else "Korean"
         val context = history.toList()
         val snapshot = config
-        translations.execute {
+        lineTranslations.execute {
             if (token != generation) return@execute
             val result = runCatching { translate(token, snapshot, text, from, to, context) }
             main.post {
@@ -225,8 +241,41 @@ internal class LiveTranslator(
                 val translated = result.getOrElse { error ->
                     status = "번역 실패: ${error.message ?: error.javaClass.simpleName}"; changed(); ""
                 }
-                if (translated.isNotEmpty()) { history.addLast(text to translated); while (history.size > 3) history.removeFirst() }
-                sourceLine = text; targetLine = translated; finals++; render(final = true)
+                ready[seq] = text to translated
+                while (true) {
+                    val (source, target) = ready.remove(shownSeq + 1) ?: break
+                    shownSeq++
+                    if (target.isNotEmpty()) { history.addLast(source to target); while (history.size > 3) history.removeFirst() }
+                    targetLine = target.ifEmpty { "(번역 실패)" }; finals++; render(final = true)
+                }
+            }
+        }
+    }
+
+    /** One early translation of the sentence still being spoken at a time; dropped once the sentence has finished. */
+    private fun translateEarly(token: Int, text: String) {
+        val now = System.currentTimeMillis()
+        if (earlyLength == 0 && pieceAt == 0L) pieceAt = now
+        val grown = text.length - earlyLength
+        if (earlyBusy || grown < MIN_CHUNK_CHARS) return
+        val boundary = text.substring(earlyLength.coerceAtMost(text.length)).any { it in BOUNDARIES }
+        if (!boundary && grown < CHUNK_CHARS && now - pieceAt < CHUNK_MS) return
+        earlyBusy = true; earlyLength = text.length; pieceAt = now
+        val sentence = lineSeq + 1
+        val id = ++earlySeq
+        val from = if (isKorean(text)) "Korean" else "English"
+        val to = if (from == "Korean") "English" else "Korean"
+        val context = history.toList()
+        val snapshot = config
+        lineTranslations.execute {
+            val result = if (token == generation) runCatching { translate(token, snapshot, text, from, to, context) } else null
+            main.post {
+                if (token != generation) return@post
+                if (id == earlySeq) earlyBusy = false
+                val translated = result?.getOrNull() ?: return@post
+                // Only while this sentence is still being spoken and no finished sentence is waiting to be shown.
+                if (!active || sentence != lineSeq + 1 || shownSeq != lineSeq) return@post
+                targetLine = translated; render()
             }
         }
     }
@@ -265,20 +314,26 @@ internal class LiveTranslator(
             "Translate the user's utterance from $from to $to. Output only the translation in natural spoken $to, " +
             "with no quotes, notes, romanization or explanations. Keep names and numbers accurate.$previous"
         val body = JSONObject().put("model", settings.getString("modelName")).put("stream", false)
+            // Qwen 3 models may think first by default on Model Studio; a live interpreter cannot wait for that.
+            // Thinking-only models (…-thinking, QwQ) reject the switch, so only plain Qwen names get it.
+            .apply {
+                val model = settings.getString("modelName").lowercase()
+                if ("dashscope" in endpoint.lowercase() && model.startsWith("qwen") && "thinking" !in model) put("enable_thinking", false)
+            }
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", system))
                 .put(JSONObject().put("role", "user").put("content", text)))
         val request = Request.Builder().url(endpoint).apply {
             settings.optString("modelKey").takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") }
         }.post(body.toString().toRequestBody("application/json".toMediaType())).build()
-        val current = http.newCall(request); call = current
-        // stop() may have run between the generation check and assigning the call.
+        val current = http.newCall(request); calls += current
+        // stop() may have run between the generation check and registering the call.
         if (token != generation) current.cancel()
-        return current.execute().use { response ->
+        return try { current.execute().use { response ->
             check(response.isSuccessful) { "HTTP ${response.code}" }
             JSONObject(checkNotNull(response.body).string()).getJSONArray("choices").getJSONObject(0)
                 .getJSONObject("message").getString("content").trim().trim('"').ifBlank { error("빈 번역 결과") }
-        }
+        } } finally { calls -= current }
     }
 
     companion object {
@@ -291,6 +346,7 @@ internal class LiveTranslator(
         private const val MIN_CHUNK_CHARS = 8
         private const val CHUNK_CHARS = 60
         private const val CHUNK_MS = 3_000L
+        private const val LINE_WORKERS = 3
         private val BOUNDARIES = setOf('.', '?', '!', ',', '。', '？', '！', '，', '、')
         fun clip(text: String, limit: Int): String { val value = text.trim(); return if (value.length <= limit) value else "…" + value.takeLast(limit - 1) }
         /** True when the text has no Hangul or Latin letters but does have CJK ideographs or kana. */

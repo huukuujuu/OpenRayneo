@@ -9,15 +9,18 @@ internal data class AnswerContent(val ref: AnswerRef, val question: String, val 
     val pages: List<String> get() = answerPages(text)
 }
 internal const val CAPTION_TRANSLATED = "captions-translated"
-/** The glasses' caption window holds about 100 Hangul characters: one screen, the sentence on top and its translation below. */
+/**
+ * The glasses' caption window holds about 100 Hangul characters. One screen: [top] (the latest translation, or the last
+ * finished sentence when only transcribing) stays while [live] (the speech in progress) updates below it.
+ */
 internal const val CAPTION_SCREEN_CHARS = 100
 private const val CAPTION_TRANSLATION_CHARS = 64
 private val LINE_BREAKS = Regex("[\\r\\n]+")
-internal fun captionScreen(source: String, target: String): String {
-    val s = source.trim().replace(LINE_BREAKS, " "); val t = target.trim().replace(LINE_BREAKS, " ")
+internal fun captionScreen(live: String, top: String): String {
+    val s = live.trim().replace(LINE_BREAKS, " "); val t = top.trim().replace(LINE_BREAKS, " ")
     if (t.isEmpty()) return clipTail(s, CAPTION_SCREEN_CHARS)
-    val translation = clipHead(t, CAPTION_TRANSLATION_CHARS)
-    return if (s.isEmpty()) translation else clipTail(s, CAPTION_SCREEN_CHARS - translation.length - 1) + "\n" + translation
+    val upper = clipHead(t, CAPTION_TRANSLATION_CHARS)
+    return if (s.isEmpty()) upper else upper + "\n" + clipTail(s, CAPTION_SCREEN_CHARS - upper.length - 1)
 }
 /** Keeps the start (a translation reads from its beginning); never splits a surrogate pair. */
 private fun clipHead(text: String, limit: Int): String {

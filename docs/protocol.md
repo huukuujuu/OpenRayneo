@@ -177,7 +177,7 @@ ASR feed는 확인 커서가 있는 단기 소비 통로이며, 확인된 오디
 자막 `0x13`과 프롬프트 `0x17`은 모두 type 1 시작, 2 결과/유효 설정, 3 제어, 4 오디오, 5 텍스트를 쓴다.
 SID는 start/audio/update/exit 전체를 관통해야 하며, SID가 일치하는 성공 설정을 받은 뒤에만 해당 세션에 들어간다.
 자막 임시 설정은 type 7/8이다. 사용 중인 표시 설정은 `font_size/content_width/max_lines/position/is_display/straight_view`다.
-자막 텍스트는 mode 3, 프롬프트 텍스트는 mode 4이며 status 0은 중간, 1은 최종이다. 내용에는 `source_transcript`와 선택적 번역이 들어간다. 공식 1.0.25 기준 mode 3은 전사 전용(번역 무시), mode 1은 classic 이중 언어(안경이 줄을 쌓고 고개 각도로 원문/번역을 바꿔 보여 줌)다. 안경 자막 페이지는 status 1을 줄로 쌓고 status 0은 열린 줄을 교체하므로, 이 앱은 원문과 번역을 합친 한 화면(약 100자)을 mode 3 status 0으로 보내 교체한다.
+자막 텍스트는 mode 3, 프롬프트 텍스트는 mode 4이며 status 0은 중간, 1은 최종이다. 내용에는 `source_transcript`와 선택적 번역이 들어간다. 공식 1.0.25 기준 mode 3은 전사 전용(번역 무시), mode 1은 classic 이중 언어(안경이 줄을 쌓고 고개 각도로 원문/번역을 바꿔 보여 줌)다. 안경 자막 페이지는 status 1을 줄로 쌓고 status 0은 열린 줄을 교체하므로, 이 앱은 번역(위)과 지금 말하는 원문(아래)을 합친 한 화면(약 100자)을 mode 3 status 0으로 보내 교체한다.
 프롬프트 시작은 보통 `{sid,trigger:1,force:false,code:0,settings:{mode:"conversation",source_language:"zh-CN",target_language:"zh-CN",save_audio:false,direction:"ahead"}}`를 쓴다.
 성공 결과는 code 1과 final_settings를 담는다. 자막 종료는 reason_code 10, 프롬프트 종료는 reason_code 2다.
 `save_audio:false`는 type-4 오디오를 끄지 않으며 로컬 저장 여부도 결정하지 않는다.
