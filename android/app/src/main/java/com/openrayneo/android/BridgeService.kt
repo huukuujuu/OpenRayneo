@@ -61,6 +61,13 @@ internal class BridgeService : Service() {
     private var nextAnswer = 0L
     private val serviceInstance = java.util.UUID.randomUUID().toString()
     private var latestRealtimeRequest = 0L
+    /** The newest realtime request whose answer reached the glasses: older answers arriving later are dropped. */
+    private var shownRealtimeRequest = 0L
+    /** The answer on screen came from the listening realtime record: it returns to the listening page after a while. */
+    private var realtimeAnswerRef: AnswerRef? = null
+    /** Bumped each time the listening page opens: answers to requests from before it (e.g. hint mode) are not shown. */
+    private var listeningEpoch = 0L
+    private fun openListening() { listeningEpoch++; conversationOwnsDisplay = true; dispatch(GlassesEvent.OpenStandby) }
     private val pendingAnswers = mutableMapOf<AnswerSource, AnswerPermit>()
     private data class VoiceDelivery(val ref: AnswerRef, val source: ConversationSource, val wakeId: String?)
     private var voiceReply: VoiceDelivery? = null
@@ -387,7 +394,7 @@ internal class BridgeService : Service() {
     private fun conversationCapture(source: ConversationSource, start: Boolean) {
         if (start) {
             when (source) {
-                ConversationSource.REALTIME -> { conversationOwnsDisplay = true; dispatch(GlassesEvent.OpenStandby) }
+                ConversationSource.REALTIME -> openListening()
                 // Voice memo records are only ever re-transcribed from saved audio, never captured live here.
                 ConversationSource.VOICE_MEMO -> Unit
                 ConversationSource.NATIVE, ConversationSource.ALWAYS_ON -> {
@@ -417,7 +424,7 @@ internal class BridgeService : Service() {
             // Live answers suggests replies to what others ask the wearer; the app's realtime hint answers only the wearer.
             if (liveAnswers) context = runCatching { JSONObject(context).put("mode", "live_answers").toString() }.getOrDefault(context)
             latestRealtimeRequest = ++nextAnswer
-            input.put("serviceInstance", serviceInstance).put("displayRevision", state.revision).put("realtimeRequest", latestRealtimeRequest)
+            input.put("serviceInstance", serviceInstance).put("displayRevision", state.revision).put("realtimeRequest", latestRealtimeRequest).put("listeningEpoch", listeningEpoch)
         }
         // The glasses window shows only a few lines; the DSH plugin asks the Agent to fit them (0 = no limit).
         input.put("answerMaxChars", settings.read().optString("answerMaxChars").toIntOrNull() ?: DEFAULT_ANSWER_MAX_CHARS)
@@ -443,12 +450,19 @@ internal class BridgeService : Service() {
         if (source == ConversationSource.NATIVE && wake != null && wake == voiceTransport.wakeId && voiceTransport.nativeActive)
             voiceTransport.reply(answer, question, wake)
         else if (source == ConversationSource.REALTIME && input.optString("serviceInstance") == serviceInstance &&
-            input.optLong("realtimeRequest") == latestRealtimeRequest && input.optLong("displayRevision", -1) == state.revision &&
+            // Every heard sentence sends a request, and most end as "wait": a later sentence must not drop this answer,
+            // only a newer answer already shown does. The page must still be the listening page or one of its answers.
+            input.optLong("realtimeRequest") > shownRealtimeRequest && input.optLong("listeningEpoch", -1) == listeningEpoch &&
+            // Never over an answer the user asked for, or while one is still being prepared.
+            pendingAnswers.isEmpty() && (state.intent == DisplayIntent.PromptStandby || state.intent == DisplayIntent.BlankPrompt ||
+                realtimeAnswerRef != null && (state.intent as? DisplayIntent.Answer)?.ref == realtimeAnswerRef) &&
             conversations.state.running && conversations.state.activeRecord?.id == id && conversationOwnsDisplay &&
             state.ownership == DisplayOwnership.APP && state.link.phase == LinkPhase.FULL && !state.disconnecting) {
             val ref = AnswerRef(AnswerSource.MOBILE_AGENT, input.getLong("realtimeRequest"))
+            shownRealtimeRequest = ref.taskId
             dispatch(GlassesEvent.AnswerRequested(ref))
             val permit = checkNotNull(state.answerPermit)
+            realtimeAnswerRef = ref
             autoClearFor = ref; clearAnswerTask?.let(main::removeCallbacks); clearAnswerTask = null
             dispatch(GlassesEvent.AnswerCompleted(AnswerContent(ref, question, answer), permit))
         } else if (state.link.phase == LinkPhase.FULL && !state.disconnecting) connection.sendNotification("어시스턴트", answer)
@@ -570,7 +584,7 @@ internal class BridgeService : Service() {
         check(state.link.phase == LinkPhase.FULL && !state.disconnecting) { "먼저 안경을 완전히 연결하세요" }
         if (conversations.state.running && conversations.state.source == ConversationSource.REALTIME) {
             liveAnswers = fromGlasses
-            conversationOwnsDisplay = true; dispatch(GlassesEvent.OpenStandby); return
+            openListening(); return
         }
         check(!conversations.state.running) { "다른 기록(${conversations.state.source.title})이 실행 중입니다. 기록 탭에서 먼저 중지하세요" }
         translator.stop()
@@ -691,11 +705,16 @@ internal class BridgeService : Service() {
         }
         val session = state.session ?: return
         if (clearAnswerTask != null || session.phase != PagePhase.READY || session.writtenContent != session.content) return
-        val seconds = settings.read().optInt("answerClearSeconds", 0).coerceIn(0,3600)
+        val setting = settings.read().optInt("answerClearSeconds", 0).coerceIn(0,3600)
+        // A realtime answer always goes back to the listening page (heard sentences show again); 0 means the default hold.
+        val listening = ref == realtimeAnswerRef
+        val seconds = if (listening && setting == 0) REALTIME_ANSWER_HOLD_SECONDS else setting
         if (seconds == 0) { autoClearFor = null; return }
         val revision = state.revision; val id = session.id
         clearAnswerTask = Runnable {
-            if (state.session?.id == id && state.revision == revision && (state.intent as? DisplayIntent.Answer)?.ref == ref) clearDisplay()
+            if (state.session?.id == id && state.revision == revision && (state.intent as? DisplayIntent.Answer)?.ref == ref) {
+                if (listening) { autoClearFor = null; clearAnswerTask = null; dispatch(GlassesEvent.DismissAnswer) } else clearDisplay()
+            }
         }.also { main.postDelayed(it, seconds * 1000L) }
     }
     fun revealAnswer(source: AnswerSource) {
@@ -878,5 +897,6 @@ internal class BridgeService : Service() {
 
 internal const val DEFAULT_ANSWER_MAX_CHARS = 60
 private const val ANSWER_PAGE_MS = 7_000L
+private const val REALTIME_ANSWER_HOLD_SECONDS = 10
 private val PROBLEM = Regex("실패|오류|끊|보충|미룸|대기|절전|배터리|온도|내려받|API Key|멈췄|다시 연결")
 private const val NO_VIRTUAL_TARGET = "가상 음성을 받을 기능이 없습니다. 먼저 안경에서 실시간 자막/답변/음성 메모를 열거나 깨우세요"

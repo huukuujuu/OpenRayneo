@@ -104,7 +104,7 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
             "본인 말 끝부분이 채널 2에 남으면 늘리고, 바로 이어지는 상대 말이 잘리면 줄이세요.")
         Row { Checkbox(drafts["memoryAutoSummary"] != "false", { drafts["memoryAutoSummary"] = it.toString() }); Text("롤링·하루 마감·기록 종료 요약 자동 생성") }
         Note("종일 기록과 개별 기록은 원본 오디오를 자동 저장하고, 목소리 등록은 음성 특징만 저장합니다. 전사가 지연되면 오디오를 먼저 저장하고 복구 후 전사와 화자 분석을 보충합니다.")
-        VoiceField(model, "answerClearSeconds", "실시간 힌트 답변 후 화면 지우기까지 초 (0이면 유지)", "0")
+        VoiceField(model, "answerClearSeconds", "답변 후 화면 정리까지 초 (실시간 답변은 듣기 화면으로 복귀, 0이면 실시간 10초·그 외 유지)", "0")
         VoiceField(model, "answerMaxChars", "안경 답변 최대 글자 수 (0이면 제한 없음)", DEFAULT_ANSWER_MAX_CHARS.toString())
         Note("답변이 안경 화면 아래로 잘리면 숫자를 줄이세요. Agent에게 이 길이 안에서 답하도록 요청합니다.")
         SectionLabel("현재 위치 및 날씨")
