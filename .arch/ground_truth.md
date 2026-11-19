@@ -24,9 +24,9 @@
 | 채널과 신원 | ORPCM1 이전 mono / ORPCM2 2채널 호환. 실제 2채널은 ch1 기본 본인, ch2 완전 speaker, 네이티브/AON mono는 전부 처리. Opus 인코딩 채널 수와 물리 출처는 따로 본다. 자동 신원 매칭은 이름 있는 인물끼리 점수를 겨루되(1·2위 차 0.08 이상, `speakerThreshold` 기본 0.7) 본인(`self`)일 때만 확정하며, 다른 화자는 기록별 라벨(A, B…)과 speakerSamples만 남기고 인물을 자동 생성하지 않는다(이전에는 라벨마다 "이름 없는 인물"을 만들어 인물이 과도하게 늘었다). 이미 만들어진 이름 없는 인물은 데이터 보존을 위해 그대로 둔다. `audioChannel`은 목소리 등록 때 쓸 마이크만 정한다. |
 | 인물 수정 | Android 37은 명시적 바인딩으로 출처 익명 화자를 병합하고 과거 ID를 보존한다. 후보 필터는 이미 이름 붙은 인물과 같은 model이면서 완전히 같은 익명 중복 참조만 거른다. 짧은 구간은 남기고, 겹침은 실제 교집합만 표시한다. |
 | 현재 산출물 | Android CI(`main`과 `android-only` 푸시 시 실행) 빌드: versionCode=1000+GITHUB_RUN_NUMBER(로컬 37), BuildConfig.GIT_COMMIT을 설정 화면에 표시, versionName=1.(run-23).0으로 매번 올라가며 Nextcloud 파일 이름에 씀(로컬 1.2.0-beta.4), DSH 0.1.9(현재 앱과 짝, 0.1.8은 모든 발화에 답함). Android 36 release를 되돌리기용으로 두며 경로는 [운영 가이드](../docs/runbook.md)를 본다. |
-| 안경 내장 기능 | 안경 메뉴의 Voice memo(`0x0e` 네이티브 녹음), Live captions(`0x13` 자막), Live answers(`0x17` PROACTIVE_AI, 공식 1.0.25 정적 분석으로 확인)는 화면을 안경 펌웨어가 그리고 휴대폰은 오디오를 받아 텍스트를 돌려주는 구조다. Android는 지금 자기가 연 `0x13`(내비게이션)/`0x17`(실시간 힌트) 세션과 `0x0e` 일부 응답만 다루고, 안경 메뉴가 먼저 여는 세션과 오프라인 녹음 목록/가져오기는 처리하지 않아 이 메뉴들은 동작하지 않는다. Live captions는 앱 기능으로 되살렸다: 안경 화면의 "실시간 자막" 버튼이 실시간 번역과 같은 `0x17` 프롬프트 창과 ASR을 번역 없이 쓴다(사용자 ASR 엔진/언어 힌트, 위 줄 = 끝난 문장, 아래 줄 = 말하는 중). 앱 세션이 아닌 `0x13/0x17` 비오디오 프레임은 종류별 처음 5개를 로그("안경 쪽 화면 신호 수신")에 남기고, `0x13` type 1은 안경 메뉴의 자막 시작 요청으로 가정해, 기록·번역·다른 화면이 없을 때만 앱 자막을 시작한다(최근 닫은 sid의 늦은 응답은 제외). 이 가정과 안경 쪽 페이지와의 충돌 여부는 실기기에서 메뉴를 열어 로그로 확인해야 한다. Voice memo 가져오기와 Live answers는 아직 없다. 화면 배치 자체는 바꿀 수 없고(안경 앱 설치 계약 미복원) 보내는 텍스트와 위 표시 설정만 정할 수 있다. 공식 1.0.25 분석(protocol.md 6절): 안경 메뉴가 먼저 연 `0x13/0x17` 세션에는 앱이 안경이 보낸 sid 그대로 0x02 `{sid, code:1, final_settings}`로 답해야 하는데, 앱은 이제 그렇게 답한다: 안경 메뉴의 Live captions(`0x13` type1)는 안경 자막 화면(PageMode.CAPTION, mode 3, 끝난 문장은 status1로 빠짐없이, 말하는 중은 status0)에 사용자 ASR 자막을 보내고, Live answers(`0x17` type1)는 실시간 힌트를 그 sid로 연다. 다른 기록/번역/화면이 실행 중이거나 시작 조건이 안 되거나 8초 안에 이어받지 못하면 type3으로 거절한다. 실기기 미확인. |
+| 안경 내장 기능 | 공식 1.0.25 정적 분석을 반영하여 안경 메뉴의 Live captions(`0x13` type1)와 Live answers(`0x17` type1)를 같은 sid로 이어받고 type2 `{sid,code:1,final_settings}`를 반환한다. 자막은 PageMode.CAPTION의 status1/0, Live answers는 실시간 힌트로 연결한다. 앱의 실시간 자막 버튼은 번역 없는 ASR과 프롬프트 창을 사용한다. 다른 기록/번역/페이지가 사용 중이거나 8초 안에 이어받지 못하면 type3으로 거절한다. R14(type9 확인)와 R16(반복 자막)은 고쳤다. 실기기(이전 빌드) 로그: 안경 메뉴 Live captions는 `0x13` type1 `{sid,trigger:2,code:1,force:false,settings:{mode:"classic",source_language:"en-US",target_language:"zh-CN",save_audio…}}`, Live answers는 `0x17` type1 `{sid,trigger:2,…,settings:{mode:"classic",src_lang:"auto",dst_lang:"",save_audio:false,direction…}}`, 연결 직후 `0x17` type11 `{sid,state:"idle",text:""}`를 보낸다. 그 빌드는 sid를 이어받지 않아 Live captions가 20~30초 뒤 닫히고 Live answers/Voice memo는 안경에 unknown error가 떴다. Voice memo(`0x0e`) 안경 시작 처리는 아직 없고, 처음 보는 `0x0e`/`0x14` action1 요청 본문을 "안경 요청 수신" 로그로 남긴다. 프롬프터는 안경 메뉴로 열리지만 자동 스크롤이 동작하지 않으며(원인 미확정: 공식 앱의 "眼镜发起 0x03 倒计时完毕 ACK"/스마트 따라읽기 0x08 진행 중 어느 쪽이 필요한지 로그로 확인 필요). Voice memo의 오프라인 녹음 목록/가져오기는 여전히 미구현이다. 안경 화면 레이아웃 자체 변경 및 안경 앱 설치 계약은 복원하지 않았다. |
 | 프롬프터 | 이전에는 앱이 시작한 재생만 처리하고 원고 목록을 안경에 보내지 않았으며 안경이 직접 고른 원고(`0x14` type2 action1)에 응답하지 않아 안경 메뉴의 프롬프터로는 원고를 열 수 없었다. 지금은 연결될 때와 저장/가져오기 뒤 전체 목록을 type1(list type 1 fullSync, 3개씩 chunk)으로 보내고, 안경의 목록 요청(type1 action1)에는 다시 보낸다. 안경이 원고를 고르면 type2 action2 code1(없으면 code5)로 답하고 `0x11`로 본문을 보낸 뒤, 안경의 type3 action1(읽기 시작)에 checksum과 함께 type3 action2 code1로 답한다(protocol.md 9절의 복원 흐름). 원고함의 "텍스트 파일 가져오기"는 여러 텍스트 파일(각 1MB 이하, UTF-8 아니면 CP949)을 파일 이름을 제목으로 저장한다. 안경 메뉴 쪽 흐름과 재생 중 목록 갱신의 펌웨어 반응은 실기기 확인 필요. |
-| 검증 범위 | 현재 `5542b1f` 독립 재확인: WSL Debug/Release 빌드와 양쪽 lint 통과(46초, 107개 태스크). 변형별 오류 0, 경고 24, 힌트 2. Android 단위 테스트는 NO-SOURCE. 새 복사본의 DSH `npm ci` 및 잠금 의존성을 사용한 모듈 검사 15건 통과. 실제 기기 미연결로 UI/음성/장시간 동작은 미검증. 후속 소스 검토에서 확인한 동기화 시퀀스 후퇴 R12와 음성 설정의 남은 이중 상태 R13은 다음 커밋에서 고쳤고 WSL `assembleDebug`+`lintDebug` 통과(lint 종류별 개수 동일), 독립 리뷰 지적 없음. |
+| 검증 범위 | `a6ca12c` 독립 재검토: Debug/Release 빌드와 양쪽 lint 통과(41초, 107개 태스크), 변형별 오류 0/경고 24/힌트 2. Android 단위 테스트 NO-SOURCE. DSH 잠금 설치와 신규 경로 중심 격리 검사 11건 통과. 실제 production JVM 클래스에서 R14–R16 재현. 연결 기기 0대이므로 화면·음성·전력·펌웨어 상호운용성은 미검증. 상세 범위와 재현은 아래 절 참조. |
 
 **현재 핵심 문제: 실제 사람 음성 지문 놓침과 한 사람 오분류.** 실제 59.64초 네이티브 입력을 저장했고, 사용자는 본인만 말했다고 확인했다. 결과는 5구간/3그룹, 최고 일치 0.624(나머지 0.602/0.399)이며 현재 기준값은 0.70이다. 등록 참조 6개를 하나씩 빼고 교차 검증하니 2개가 0.659/0.674에 그쳤다. 같은 네이티브 녹음의 A/B 상호 cos는 0.641이다. 짧은 문장 특징의 불안정과 등록/매칭 기준의 불일치는 실증되었고, 등록 ch1과 네이티브 mono 수음 차이가 따로 얼마나 기여하는지는 아직 검증이 필요하다. 이 결과로 모델/기준값/프로필을 바꾸지는 않았다.
 
@@ -42,10 +42,10 @@
 
 ## 프로젝트 결함 및 UI·UX 검토
 
-검토 기준: 2026-11-19, `android-only`의 `5542b1f`. 최초 항목의 코드 위치는 `47fb0d2`, 후속 R12/R13 위치는 `5542b1f` 기준이다.
+검토 기준: 2026-11-19, `android-only`의 `a6ca12c`(공식 APK 반영 후 전수 재검토). 최초 항목의 코드 위치는 `47fb0d2`, 후속 R12/R13 위치는 `5542b1f` 기준이다.
 최초 검토는 `a914718`의 Android/Mac 소스를 대상으로 10개 항목을 정리했다. 이후 Android 전용 전환과 문서 교체로 해당 절이 사라져, 같은 ID로 현재 상태와 근거를 복원했다. 이번 작업은 검사와 문서화이며 앱 코드 수정은 하지 않았다.
 
-**현재 결론:** 기존 Android 문제 7개의 대상 경로에 수정이 들어간 것을 확인했고 R11의 잠금 설치 실패는 새 폴더에서 해결을 재확인했다. 후속으로 확인한 R12(손상 기록 제외 후 동기화 시퀀스 후퇴)와 R13(엔진 외 음성 설정의 표시/초안 불일치)도 코드로 고쳤다. 남은 것은 실기기 동작 확인과 테스트 소스 부재다. R10 언어 표시는 개선되었고 Mac 2개 항목은 범위 밖이다. P1은 데이터 보존/서비스 가용성, P2는 주요 기능·개발 재현성/사용성, P3은 표현 일관성이다. UI와 장애 경로는 소스 검토이며 실기기 재현을 완료한 것으로 간주하지 않는다.
+**현재 결론:** 이전 R01–R13의 수정/범위 제외 상태는 아래에 유지한다. 공식 APK 반영 후 `a6ca12c`에서 새 문제 **R14–R16 세 건을 실제 production 클래스의 격리 실행으로 재현**했고, 다음 커밋에서 셋 다 고쳤다(빌드/lint 통과, 독립 리뷰 반영, 실기기 미확인). Android 양쪽 빌드/lint와 DSH 설치·격리 검사는 통과했지만 현재 기능 검수는 미완료다. P1은 핵심 세션 가용성, P2는 신원 귀속·자막 기능/사용성 문제다. 기기 연결이 없어 실제 펌웨어 반응과 UI 조작은 아직 확인하지 못했다. 이번 검토에서는 앱 코드를 수정하지 않았다.
 
 아래 Android 파일명은 `android/app/src/main/java/com/openrayneo/android/`를 기준으로 하며 줄 번호는 `47fb0d2` 기준이다.
 
@@ -73,7 +73,44 @@
 
 ## 완료 신호 이후 재검증 결과
 
-### 현재 수정 커밋 재확인 — `5542b1f`
+### 공식 APK 반영 후 전수 재검토 — `a6ca12c`
+
+2026-11-19 사용자 요청에 따라 이전 검증 기준 `5542b1f` 이후 7개 커밋, 변경 파일 30개 전체의 diff를 확인하고 주요 호출 경로와 기존 계약을 대조했다. `ok`와 `origin_apk/`는 미추적 상태로 보존했다. APK는 `origin_apk/RayNeo+AI_1.0.25_APKPure.xapk`이며 기존 `analysis/reverse-2026-11-19-1.0.25/`의 jadx/blutter 결과를 사용했다. APK 전체의 모든 함수가 검증되었다는 뜻으로 범위를 확대하지 않는다. 이번 검토는 변경 파일 전체와 관련 기능 경로를 대상으로 한다.
+
+**R14 · P1 · 수정(실기기 미확인) · 공식 세션의 최종 확인(type9) 단계 누락.** 수정: 앱 시작 세션은 type2 code1을 받으면 같은 sid로 type9 `{sid,code:1}`을 보낸다(내비게이션은 이전 동작 유지를 위해 제외). 안경 시작 세션은 type2를 보내면서 5초 확인 대기를 시작해, 안경 type9를 로그로 남기고 code가 1이 아니면 세션을 끝낸다. 오지 않으면 로그만 남긴다(펌웨어 동작 미확인). 원 지적: `GlassesDisplay.kt:59–80`의 안경 제안 수락은 type2 쓰기 성공만으로 AudioAccepted/Settling에 진입한다. `:163–196`의 수신 경로는 accepted 이후 조기 반환하고 앱 시작 type2 성공 뒤에도 type9를 보내지 않는다. 공식 정적 근거는 `docs/protocol.md` 6절과 blutter `pp.txt`의 `pp+0xc37c0`(0x09 확인 timeout), `c37d0`(0x09 취소), `c9858`(대기창 밖 늦은0x09), `c98f0`(예상 밖0x02)이다. 공식 흐름은 앱 시작 시 1→2→9, 안경 시작 시 1→2→9의 반대 방향 확인을 요구한다. **재현:** 생산 `GlassesDisplay`에 안경 CAPTION offer를 넣고 쓰기 성공 callback/500ms settle을 실행하면 type9 이전 AudioAccepted=true, 확인 기한 없음; 같은 sid의 type9 취소를 넣어도 종료되지 않는다. 앱 시작 후 type2 code1을 주어도 type9 전송은 없다. 실제 펌웨어가 확인을 기다리거나 취소하는 경우 앱과 안경 세션 상태가 어긋날 위험이다. 수정 기준: 시작 주체별 확인 상태/성공·취소·timeout을 구현하고 공식 설정 계약에 맞춰 확인을 주고받으며, 실패 시 오디오와 페이지를 정리한다. 안경 메뉴와 앱 버튼 양쪽의 실기기 추적이 필요하다.
+
+**R15 · P2 · 수정 · 본인만 자동 식별 정책이 최종 귀속에서 우회됨.** 수정: `assignment()`의 identity도 본인일 때만 확정하고, 타인과 닮으면 "본인이 아닌 등록 인물과 닮음, 자동으로 귀속하지 않음"으로 남긴다. 원 지적: `SpeakerEngine.kt:146–149`의 `person()`은 본인만 허용하지만 `:176–179`의 `assignment()`는 모든 등록 인물을 다시 매칭해 `identity`로 반환한다. `ConversationController`가 이 결과의 personId를 소비하므로 화면 안내와 실제 기록 신원이 달라질 수 있다. **재현:** 가상 self=[1,0], other=[0,1], threshold=0.7, 1초 단일 화자 evidence=[0,1]을 주고 실제 `assignment(0,1000)`을 호출하면 personId=`other`. 실제 녹음이나 모델 추론 없이 정책 우회만 확인했다. 수정 기준: 최종 자동 귀속에도 동일 본인 제한 적용; 타인은 A/B 유지하되 명시적 수동 귀속·후보 표시는 별도로 보존한다.
+
+**R16 · P2 · 수정 · 서로 다른 발화의 동일 자막 누락.** 수정: 자막 최종 문장마다 번역기 수명 전체에서 증가하는 serial을 붙여(TranslationView/PageContent.serial) 문자열이 아니라 serial로 새 최종 문장을 판단한다. 원 지적: `GlassesDisplay.kt:97–98`은 최종 문장을 세션 전체의 `lastFinal` 문자열과 비교한다. 그 값은 새 발화가 아니라 세션 reset 때 초기화된다(`:263`). **재현:** CAPTION 세션에서 첫 최종 `yes`, 다음 발화의 부분 `ye`, 두 번째 최종 `yes`를 순서대로 공급하면 status1 송신은 2회가 아닌 1회다. 두 번째 문장이 기록되지 않거나 부분 문장이 남을 수 있다. 수정 기준: 발화 ID/순서로 중복 callback과 새로운 동일 문장을 구별한다. 연속 `네`, 같은 질문 반복, 부분 결과 없이 같은 최종 결과가 이어지는 경우까지 확인해야 한다.
+
+#### 검사 범위와 결과
+
+| 영역 | 확인 내용 | 결과·남은 확인 |
+| --- | --- | --- |
+| 공식 APK/프로토콜 | 메뉴 시작 방향, sid 유지, 0x02/0x09, 자막 status, 프롬프터 목록/본문/읽기 시작 계약 대조 | R14 확인. 정적 분석이며 실제 패킷 왕복 미검증 |
+| 연결·화면 소유권 | BridgeService → GlassesCoordinator → GlassesDisplay, busy/거절/늦은 sid/오디오 전달 경로 | 수락 경로 존재. 확인/취소 상태 R14 미해결 |
+| 자막·실시간 번역 | LiveTranslator, 화면 버튼, ASR 선택, 문장/시간 단위 번역, 최종/부분 자막 전송 | 컴파일 통과, R16 재현. 실제 ASR 지연/누락·장시간 세션 미검증 |
+| 실시간 응답·DSH | wait/hint/agent 분기, 최초 지침/세션 재사용, 발화 맥락 | wait/hint/잘못된 routing 응답의 wait fallback 실행 통과. agent 도구 실행과 실제 LLM 응답은 미실시 |
+| 화자·기록 | SpeakerEngine와 ConversationController, 본인 제한, 최종 신원 귀속 | R15 재현. 합성 임베딩 사용, 실제 인식률 측정 아님 |
+| 프롬프터·원고 UI | 목록 fullSync, 안경 선택, 본문 전송, 읽기 시작, 가져오기, 초안/폐기 확인 | 소스 검토·컴파일 통과. 큰 파일/다중 가져오기, 회전/백그라운드 초안 보존, 목록 동기화 중 재생은 기기 확인 필요 |
+| 설정·동기화 | R12 sequence-mark와 R13 단일 초안 적용 재확인 | 코드 수정 확인. 암호화 기록 손상 및 네트워크 부하 실험은 하지 않음 |
+| Android 전체 기존 검사 | assembleDebug/Release, lintDebug/Release, testDebugUnitTest/testReleaseUnitTest | BUILD SUCCESSFUL, 41초, 107개 태스크. 양쪽 lint 오류0/경고24/힌트2. 단위 테스트는 NO-SOURCE(0건) |
+| APK/기본 형식 | 두 APK ZIP CRC와 arm64-v8a/x86_64 포함, Android XML 및 scripts Python AST | 통과. 이번 APK 서명 검사는 별도 재실행하지 않음 |
+| DSH 의존성·모듈 | 깨끗한 복사본 npm ci, JS4개 구문, 실제 잠금 SDK로 격리 검사 | 22개 패키지 설치, 모듈 검사11건 통과. 서비스/기기 없이 mock 사용 |
+| 실제 UI·접근성·전력 | ADB devices -l | 연결0대. TalkBack/큰글꼴/키보드, BLE 재연결, 펌웨어, 실제 오디오, 장시간·배터리 미검증 |
+
+DSH 11건: 신규 세션 instructed=false, 재사용 instructed=true, 재사용 시 생성 없음, 이전 binding 호환, 다른 세션 mark 무시, backfill scope 제외, 원격 API 주소 거부, wait 빈 응답, hint 짧은 응답, 잘못된 route의 wait 처리, plugin import. 모델 스트림/서버는 모의 객체이고 BlockAssembler와 플러그인은 실제 설치 모듈이다. 이전 15건을 이번에 모두 다시 실행했다고 합산하지 않는다.
+
+#### 작업·재현 자료
+
+- 검증용 HEAD archive를 `/home/green/openrayneo-validation/a6ca12c`에 추출하여 기존 운영 가이드의 6개 Gradle 태스크를 두 ABI로 실행했다. `verification-gradle.log`, lint XML/HTML, APK 및 `probe-results.json`을 보존한다.
+- JVM 임시 재현은 실제 `bundleDebugClassesToRuntimeJar/classes.jar`를 Kotlin friend-path로 참조했다. UI/네트워크·시간 callback을 대체했으며 SpeakerEngine은 모델 초기화를 생략하고 합성 people/evidence를 주입하여 실제 assignment 메서드를 실행했다. Android 계측 테스트로 집계하지 않는다.
+- 익명 집계: [analysis/verification-a6ca12c/results.json](../analysis/verification-a6ca12c/results.json). 실패의 관측값, DSH 검사 명칭, lint 개수, APK 크기/ABI를 보존한다. 원본 사용자 녹음·인물 정보는 입력하지 않았다.
+- Windows Temp `openrayneo-verify-a6ca12c/dsh`에서 의존성을 설치했고, DSH 검사는 stdin으로 실행했다. 임시 Probe.kt/run_probe.py는 검사 종료 후 휴지통으로 정리한다. 영구 테스트/CI를 추가하지 않는다.
+- arch-grower CLI가 Windows 및 WSL의 로컬 스킬 경로에서 발견되지 않아 focus/export-ui는 실행하지 못했다. graph.json을 직접 읽거나 수정하지 않았다. `.agents/skills/` 접근 거부는 권한 변경 없이 유지했다.
+- 앱 코드, 잠금 파일, 공식 APK, 서명 자료, ok를 수정하지 않았다. 기존 ground_truth와 README만 갱신하고 커밋/게시/기기 설치는 하지 않았다. 시작/끝 HEAD와 diff 공백 검사로 검토 중 코드 변경 여부를 확인한다.
+
+### 이전 수정 커밋 재확인 — `5542b1f`
 
 사용자의 수정 확인 요청에 따라 Git 상태와 변경된 Kotlin 파일 및 잠금 파일을 대조했다. 시작 시 코드 미커밋 변경 없이 `ok`만 미추적이었다. `git -c core.autocrlf=false archive`로 새 WSL 검증 폴더 `/home/green/openrayneo-validation/5542b1f`를 만들었고 앱 소스는 수정하지 않았다. arch-grower는 여전히 찾지 못해 graph/dashboard를 직접 다루지 않았다.
 

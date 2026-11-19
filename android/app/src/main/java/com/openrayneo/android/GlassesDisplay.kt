@@ -36,10 +36,13 @@ internal class GlassesDisplay(
     private val recentAudioSequences = ArrayDeque<Long>()
     // CAPTION: every finished sentence goes out once as a final (status 1); only the latest partial (status 0) may be skipped.
     private val finals = ArrayDeque<String>()
-    private var lastFinal = ""
+    private var lastFinal = -1L
     private var lastPartial = ""
     private var audioReported = false
     private var unmatchedAudioReported = false
+    /** Glasses-started session still waiting for the glasses' 0x09 confirmation of our type 2. */
+    private var awaitingConfirm = false
+    private val confirmTimeout = Runnable { if (awaitingConfirm) { awaitingConfirm = false; report("안경이 시작 결과 확인(0x09)을 보내지 않음, 세션은 유지") } }
     private val timeout = Runnable { fail("안경이 시작 또는 레이아웃을 확인하지 않았습니다. 다시 시도하세요") }
     private val settle = Runnable { settled = true; flush() }
 
@@ -65,6 +68,7 @@ internal class GlassesDisplay(
         sid = id
         val settings = offer.settings?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject()
         val starting = generation
+        awaitingConfirm = true; schedule(confirmTimeout, 5_000)
         send(offer.protocol, 2, JSONObject().put("sid", id).put("code", 1).put("final_settings", settings)) { result ->
             if (sid != id || generation != starting) return@send
             if (result.isFailure) { fail("안경이 연 세션에 시작 결과를 보내지 못함"); return@send }
@@ -94,8 +98,8 @@ internal class GlassesDisplay(
     }
 
     private fun stage(mode: PageMode, content: PageContent) {
-        if (mode == PageMode.CAPTION && content.text.isNotBlank() && content.text != lastFinal) {
-            finals.addLast(content.text); lastFinal = content.text; lastPartial = ""
+        if (mode == PageMode.CAPTION && content.text.isNotBlank() && content.serial != lastFinal) {
+            finals.addLast(content.text); lastFinal = content.serial; lastPartial = ""
         }
         pending = content
     }
@@ -154,6 +158,15 @@ internal class GlassesDisplay(
             }
             return
         }
+        if (message.type == 9) {
+            // The glasses confirm (or cancel) the start result we sent. Its body is not captured yet: log it once.
+            if (awaitingConfirm) { awaitingConfirm = false; cancel(confirmTimeout); report("안경 시작 확인(0x09) 수신: ${json.toString().take(160)}") }
+            if (json.has("code") && json.optInt("code") != 1) {
+                reset()
+                signal(active.id, PageSignal.Ended("안경이 시작을 취소함 (0x09 code ${json.optInt("code")})"))
+            }
+            return
+        }
         if (message.type == 3) {
             val reason = json.optInt("reason_code", -1)
             reset()
@@ -165,6 +178,8 @@ internal class GlassesDisplay(
             if (message.type != 2) return
             cancel(timeout)
             if (json.optInt("code") != 1) { fail("안경이 세션 시작을 거부함: ${json.optInt("code")}"); return }
+            // Official app 1.0.25 confirms the glasses' start result with 0x09 on the same sid.
+            if (active.mode != PageMode.NAVIGATION) sid?.let { id -> send(active.mode.protocol, 9, JSONObject().put("sid", id).put("code", 1)) {} }
             audioAccepted = true
             signal(active.id, PageSignal.AudioAccepted(active.mode.channels))
             if (generation != receivingGeneration) return
@@ -257,10 +272,10 @@ internal class GlassesDisplay(
     }
     fun reset() {
         generation++
-        cancel(timeout); cancel(settle)
+        cancel(timeout); cancel(settle); cancel(confirmTimeout); awaitingConfirm = false
         sid?.let { closedSids.addLast(it); while (closedSids.size > 8) closedSids.pollFirst() }
         session = null; sid = null; audioAccepted = false; accepted = false; settled = false; writing = false; failed = false
-        navigationFrameSent = false; pending = null; lastWritten = null; finals.clear(); lastFinal = ""; lastPartial = ""
+        navigationFrameSent = false; pending = null; lastWritten = null; finals.clear(); lastFinal = -1L; lastPartial = ""
         recentAudioSequences.clear(); audioReported = false; unmatchedAudioReported = false
     }
     private fun protocol(mode: PageMode) = mode.protocol

@@ -113,6 +113,12 @@ internal class BridgeService : Service() {
         }, { name, args, allowed, completion -> requests.withPermission(allowed) { executeTool(name, args, completion) } }, { agent.harness }, ::recordAPI)
         requests.observe = { protocol, type, body ->
             when (protocol) { 15 -> deviceSettings.observe(type, body); 22 -> content.observe(type, body) }
+            // Voice memo and the glasses' teleprompter requests are not mapped from a real device yet: log the first of each kind.
+            if (protocol == 0x0e && type != 3 || protocol == 0x14 && body.optInt("action") == 1) {
+                val key = "$protocol:$type"
+                val count = glassesRequestSeen.merge(key, 1, Int::plus) ?: 1
+                if (count <= 5) onLog("안경 요청 수신: 0x${protocol.toString(16)} type=$type ${body.toString().take(240)}")
+            }
         }
         conversations = ConversationController(this, settings, ::notifyUI, ::conversationCapture, ::submitVoiceRequest,
             { segment, source ->
@@ -141,7 +147,7 @@ internal class BridgeService : Service() {
         }
         voiceTransport.bargeIn = { deviceSettings.state.settings.optJSONObject("voiceAssistantConfig")?.deviceFlag("workMode") == true &&
             settings.read().optBoolean("nativeAutoAnswer") && conversations.state.running && conversations.state.source == ConversationSource.NATIVE }
-        translator = LiveTranslator(this, main, { source, target -> dispatch(GlassesEvent.TranslationText(TranslationView(source, target))) }, ::notifyUI) {
+        translator = LiveTranslator(this, main, { source, target, finals -> dispatch(GlassesEvent.TranslationText(TranslationView(source, target, finals))) }, ::notifyUI) {
             if (state.intent == DisplayIntent.Translation) dispatch(GlassesEvent.PauseDisplay)
         }
         audio = PromptAudio { left, right ->
@@ -437,6 +443,7 @@ internal class BridgeService : Service() {
     /** Live captions: the glasses' own caption feature needs the phone to recognise speech, so the app runs it here. */
     fun startCaptions() = startTranslation(captions = true)
     private var lastGlassesStart: String? = null
+    private val glassesRequestSeen = java.util.concurrent.ConcurrentHashMap<String, Int>()
     /**
      * The glasses menu opened Live captions (0x13) or Live answers (0x17) and sent its own start request (type 1 with its sid).
      * Official app 1.0.25: the phone answers with type 2 on that sid; a request it will not serve is closed with type 3.

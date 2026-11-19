@@ -176,13 +176,15 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
         val known = speaker.value.filter { !it.mixed && it.embedding != null }
             .mapNotNull { e -> accepted(candidates(e.embedding!!))?.let { it.personId to duration(e) } }
             .groupBy { it.first }.maxByOrNull { (_, votes) -> votes.sumOf { it.second } }
-        val identity = known?.takeIf { stable && it.value.sumOf { vote -> vote.second }.toDouble() / total >= 0.85 }?.key
+        val self = people().firstOrNull { it.self && it.mergedInto == null }?.id
+        val identity = known?.takeIf { stable && it.key == self && it.value.sumOf { vote -> vote.second }.toDouble() / total >= 0.85 }?.key
         val reason = when {
             mixed -> "여러 사람이 겹쳐 신원을 아직 확정하지 않음"
             !stable -> "음성이 너무 짧거나 한 문장에 여러 화자가 포함됨"
             ranked.isEmpty() -> "비교할 등록된 목소리가 아직 없음"
             ranked.first().score < threshold() -> "최고 유사도가 확정 임계값에 미달 ${"%.2f".format(threshold())}"
             ranked.size > 1 && ranked[0].score - ranked[1].score < 0.08f -> "두 후보 목소리가 비슷해 더 많은 발화를 기다림"
+            known != null && known.key != self -> "본인이 아닌 등록 인물과 닮음, 자동으로 귀속하지 않음"
             identity == null -> "구간별 매칭이 일치하지 않아 더 많은 발화를 기다림"
             else -> "등록된 목소리와 일치함"
         }

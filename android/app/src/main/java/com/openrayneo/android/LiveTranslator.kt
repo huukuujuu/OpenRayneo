@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
 internal class LiveTranslator(
     private val context: android.content.Context,
     private val main: Handler,
-    private val show: (source: String, target: String) -> Unit,
+    private val show: (source: String, target: String, finals: Long) -> Unit,
     private val changed: () -> Unit,
     /** The translator gave up on its own (e.g. repeated ASR failures); the owner should close the window. */
     private val gaveUp: () -> Unit,
@@ -160,8 +160,9 @@ internal class LiveTranslator(
     }
 
     private fun listening() = if (captions) CAPTIONS_LISTENING else LISTENING
-    private fun render() = if (fullLines) show(sourceLine.trim(), targetLine.trim())
-        else show(clip(sourceLine, SOURCE_LIMIT), if (captions) clip(targetLine, TARGET_LIMIT) else targetLine)
+    private var finals = 0L
+    private fun render() = if (fullLines) show(sourceLine.trim(), targetLine.trim(), finals)
+        else show(clip(sourceLine, SOURCE_LIMIT), if (captions) clip(targetLine, TARGET_LIMIT) else targetLine, finals)
 
     private fun interim(token: Int, text: String) {
         if (token != generation || !active || misheard(text)) return
@@ -193,7 +194,7 @@ internal class LiveTranslator(
         heard()
         // Neither Korean nor English (typically noise or Korean misread as Chinese): never show or translate it.
         if (misheard(text)) { committed = ""; pieceAt = 0L; return }
-        if (captions) { sourceLine = text; targetLine = ""; render(); return }
+        if (captions) { sourceLine = text; targetLine = ""; finals++; render(); return }
         // Pieces of this sentence were already translated from the partial text; translate only what is left.
         // If the final rewrote those words (e.g. filler removal), translate it whole rather than lose words.
         val rest = if (committed.isNotEmpty() && text.startsWith(committed)) text.drop(committed.length).trim() else text

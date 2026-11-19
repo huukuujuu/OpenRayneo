@@ -222,7 +222,7 @@ internal object GlassesCoordinator {
             DisplayIntent.PromptStandby -> PageMode.PROMPT to PageContent("standby",
                 state.standby.source.ifBlank { "OpenRayneo" }, state.standby.target.ifBlank { "실시간 힌트 준비됨" })
             DisplayIntent.Translation -> if (state.captions && state.glassesCaptions) PageMode.CAPTION to PageContent("captions",
-                state.translation.source, state.translation.target)
+                state.translation.source, state.translation.target, state.translation.serial)
             else if (state.captions) PageMode.PROMPT to PageContent("captions",
                 state.translation.source.ifBlank { "실시간 자막" }, state.translation.target.ifBlank { "말소리를 기다리는 중" })
             else PageMode.PROMPT to PageContent("translation",
