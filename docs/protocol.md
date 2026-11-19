@@ -183,6 +183,14 @@ SID는 start/audio/update/exit 전체를 관통해야 하며, SID가 일치하�
 `save_audio:false`는 type-4 오디오를 끄지 않으며 로컬 저장 여부도 결정하지 않는다.
 화면을 여는 것은 오디오/표시 진입점일 뿐이고, ASR, speaker, 의미 Agent 처리는 로컬 소프트웨어가 맡는다.
 
+공식 1.0.25(Dart 3.11.5, Blutter/JADX 정적 분석, 실기기 미확인)의 업무 번호: `0x0d` 음성 비서, `0x0e` RECORDING_SERVICE(Voice memo),
+`0x13` AI_SUBTITLE(Live captions/번역), `0x14` TELEPROMPTER, `0x17` PROACTIVE_AI(Live answers = 앱 문자열 "实时提示"), `0x1b` OFFICE_BUDDY, `0x20` NAVIGATION.
+`0x13/0x17`은 protobuf CaptionMsg(type, message JSON, data)이며 type 1 시작 요청, 2 시작 결과+설정, 3 종료 요청, 4 오디오, 6 재시도 요청, 9 수신 확인, `0x17`은 0x0B 상태 동기화도 쓴다.
+1.0.25는 앱에서 시작해도 세션 주인은 안경이다: 앱 0x01 → 안경 0x02(code, final_settings) → 앱 0x09. 안경 메뉴에서 시작하면 반대로
+안경 0x01(안경이 정한 sid) → 앱 0x02 `{sid, code, final_settings}` → 안경 0x09이고, 이후 오디오와 텍스트는 그 sid를 쓴다.
+0x02 성공을 받고도 앱이 시작을 포기했거나 0x09가 대기 시간 밖에 오면 앱은 그 sid에 0x03으로 종료를 보낸다. 안경이 0x03으로 끝내면 앱은 0x03을 다시 보내지 않는다.
+Voice memo는 안경이 먼저 녹음을 시작할 수 있으며(앱 문자열 `onGlassesInitiatedStart`), startRecording 응답 code 19는 시작 확인, 20은 취소, 1은 녹음 중이다.
+
 실제 실시간 2채널은 frame 단위로 디인터리브하며, 채널마다 FIR/ASR/round/복구 커서를 독립적으로 둔다.
 
 - ch1은 기본값이 본인이라 등록이 필요 없다. VAD/ASR은 하되 embedding/diarization은 건너뛴다.
@@ -283,6 +291,8 @@ FileInfoSync에는 uuid/filename/filesize(uint64)/md5/bus_id가, chunk에는 uui
 원고 did, UTF-8 바이트 total, checksum, UI의 UTF-16 커서는 단위가 다르다.
 안경이 원고를 고르면 먼저 로컬 원고를 해석해 실제 본문 길이를 기준으로 type2/action2/code1 또는 원고 없음 code5로 응답한 다음, `0x11`로 본문을 보낸다.
 파일 완료와 텔레프롬프터 수신 확인은 따로 기다리며, 후자는 code1/7이 복원된 성공 분기다. 읽기 시작에는 type3으로 다시 응답한다.
+1.0.25에는 안경 쪽 요청 모델 `GlassesListUpdateRequest`, `GlassesStartRequest`(원고 선택), `GlassesCueingStartRequest`(읽기 시작), `QuickLaunchConflictDecision`,
+`CheckState`, `ReadingMemorySync`, `ProgressUpdate`, `SettingsUpdate`가 있다. followSpeak용 오디오는 `0x14` type 9 data다.
 scroll은 followSpeak1/linear2/manual3이다. 설정과 페이지 내 강조 위치는 복원된 serializer를 따르고 mode를 추측하지 않는다.
 연결 복구 시 상태/checksum을 읽으며, 안경 위치로 로컬의 미저장 편집을 무조건 덮어쓰지 않는다.
 구현: [TeleprompterRepository.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/TeleprompterRepository.swift),
