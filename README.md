@@ -33,6 +33,6 @@ uv run ~/.agents/skills/arch-grower/scripts/arch_cli.py export-ui --out .arch/da
 
 현재 후보 패키지와 품질 문제는 [구현 스냅숏](.arch/ground_truth.md#현재-구현과-미해결-문제)을 본다. 공식 계정/공식 클라우드 서비스 분기는 현재 Beta에서 꺼져 있으며, 안경 펌웨어와 공식 앱이 이미 가진 기능이 기기 능력의 경계다.
 
-최근 [결함·UI/UX 검토](.arch/ground_truth.md#프로젝트-결함-및-uiux-검토)와 [완료 신호 이후 재검증 결과](.arch/ground_truth.md#완료-신호-이후-재검증-결과): 2026-11-19, `47fb0d2`. Android 지적 7건과 DSH 잠금 파일 문제는 후속 수정으로 고쳤고 빌드/lint와 `npm ci`가 통과한다. 실기기 검수는 남아 있다.
+최근 [결함·UI/UX 검토](.arch/ground_truth.md#프로젝트-결함-및-uiux-검토)와 [재검증 결과](.arch/ground_truth.md#완료-신호-이후-재검증-결과): 2026-11-19, `5542b1f`. 양쪽 빌드/lint, DSH `npm ci`와 격리 검사 15건 통과. 후속 지적 R12(동기화 시퀀스 후퇴)와 R13(음성 설정 상태 불일치)도 고쳤고, 실기기 검수는 남아 있다.
 
 [Apache License 2.0](LICENSE). 이 프로젝트는 RayNeo와 무관하며, 공식 APK, 펌웨어, 사용자 녹음, 자격 증명은 소스와 함께 배포하지 않는다.

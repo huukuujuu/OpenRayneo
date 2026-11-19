@@ -63,21 +63,19 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
             if (local.downloading) LinearProgressIndicator(progress = { local.progress }, modifier = Modifier.fillMaxWidth())
             local.message?.takeIf { !local.downloading }?.let { Note(it) }
         }
-        var keepLoaded by remember(model.config) { mutableStateOf(model.config.optString("asrKeepLoaded", "true") != "false") }
+        // Every control below reads the draft directly, like the engine choice, so leaving unsaved cannot split screen and save.
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(keepLoaded, { keepLoaded = it; drafts["asrKeepLoaded"] = it.toString() }); Text("기기 내장 ASR 모델을 항상 메모리에 유지")
+            Checkbox(drafts["asrKeepLoaded"] != "false", { drafts["asrKeepLoaded"] = it.toString() }); Text("기기 내장 ASR 모델을 항상 메모리에 유지")
         }
         Note("켜면 고른 기기 내장 모델을 미리 올려 두어 깨울 때 불러오기 지연(Nemotron은 수 초)이 없습니다. 휴대폰 메모리를 계속 차지합니다(Nemotron 약 700MB, SenseVoice 약 250MB). 끄면 1분 동안 쓰지 않을 때 내립니다.")
         SectionLabel("Bailian ASR")
         VoiceField(model, "asrKey", "API Key", secret = true)
         VoiceField(model, "asrUrl", "WSS 주소", "wss://dashscope.aliyuncs.com/api-ws/v1/inference")
         VoiceField(model, "asrModel", "모델", "qwen-audio-3.1-asr-flash-message")
-        var asrLanguages by remember(model.config) {
-            mutableStateOf(model.config.optString("asrLanguage").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet())
-        }
+        val asrLanguages = drafts["asrLanguage"].orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         fun toggleLanguage(code: String, on: Boolean) {
-            asrLanguages = if (on) asrLanguages + code else asrLanguages - code
-            drafts["asrLanguage"] = listOf("ko", "en").filter { it in asrLanguages }.joinToString(",")
+            val chosen = if (on) asrLanguages + code else asrLanguages - code
+            drafts["asrLanguage"] = listOf("ko", "en").filter { it in chosen }.joinToString(",")
         }
         Text("인식 언어 힌트")
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -85,11 +83,9 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
             Checkbox("en" in asrLanguages, { toggleLanguage("en", it) }); Text("영어")
         }
         Note("선택하지 않으면 자동 감지합니다. 클라우드는 language_hints로 전달하고, 기기 내장은 고른 언어 밖의 결과(예: 잡음을 중국어로 읽은 결과)를 버립니다.")
-        var auto by remember(model.config) { mutableStateOf(model.config.optBoolean("nativeAutoAnswer")) }
-        Row { Checkbox(auto, { auto = it; drafts["nativeAutoAnswer"] = it.toString() }); Text("음성 깨우기로 깨우면 자동 응답") }
+        Row { Checkbox(drafts["nativeAutoAnswer"] == "true", { drafts["nativeAutoAnswer"] = it.toString() }); Text("음성 깨우기로 깨우면 자동 응답") }
         Note("기본 깨우기로 응답한 뒤 오디오를 받아 ASR과 화자 처리를 마치고 다음으로 전달합니다: 로컬 Agent.")
-        var voiceGate by remember(model.config) { mutableStateOf(model.config.optString("glassesVoiceGate", "true") != "false") }
-        Row { Checkbox(voiceGate, { voiceGate = it; drafts["glassesVoiceGate"] = it.toString() }); Text("종일 기록: 안경 음성 감지(VPU/VAD) 구간만 인식") }
+        Row { Checkbox(drafts["glassesVoiceGate"] != "false", { drafts["glassesVoiceGate"] = it.toString() }); Text("종일 기록: 안경 음성 감지(VPU/VAD) 구간만 인식") }
         Note("안경이 말소리로 표시한 구간만 ASR에 보내고 나머지는 무음 처리해 잡음 전사를 줄입니다. 저장되는 원본 오디오는 그대로입니다. 기록 화면의 감지 비율이 0%에 가깝다면 꺼 주세요.")
         SectionLabel("Hey RayNeo: 답변 중 말로 끊기 감도")
         Note("안경 설정의 \"대화 끊기\"가 켜져 있을 때, 답변 중 마이크 소리가 기준보다 큰 상태가 정해진 시간 이상 이어지면 바로 끊습니다(글자 인식을 기다리지 않음). 앱 로그의 \"대화 끊기 진단: 답변 중 마이크 최대 N dBFS\"로 답변 소리 크기를 보고 맞추세요.")
@@ -105,8 +101,7 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
             "주변이 시끄러워 잡음에도 무음 처리되면 올리고(예: -40), 작게 말할 때 걸러지지 않으면 내리세요.")
         GateSlider(drafts, "selfVoiceHoldMs", "말이 끝난 뒤 유지 시간", 300f, 0f..1000f, 9, { "${it.toInt()} ms" },
             "본인 말 끝부분이 채널 2에 남으면 늘리고, 바로 이어지는 상대 말이 잘리면 줄이세요.")
-        var autoMemory by remember(model.config) { mutableStateOf(model.config.optString("memoryAutoSummary", "true") != "false") }
-        Row { Checkbox(autoMemory, { autoMemory = it; drafts["memoryAutoSummary"] = it.toString() }); Text("롤링·하루 마감·기록 종료 요약 자동 생성") }
+        Row { Checkbox(drafts["memoryAutoSummary"] != "false", { drafts["memoryAutoSummary"] = it.toString() }); Text("롤링·하루 마감·기록 종료 요약 자동 생성") }
         Note("종일 기록과 개별 기록은 원본 오디오를 자동 저장하고, 목소리 등록은 음성 특징만 저장합니다. 전사가 지연되면 오디오를 먼저 저장하고 복구 후 전사와 화자 분석을 보충합니다.")
         VoiceField(model, "answerClearSeconds", "실시간 힌트 답변 후 화면 지우기까지 초 (0이면 유지)", "0")
         VoiceField(model, "answerMaxChars", "안경 답변 최대 글자 수 (0이면 제한 없음)", DEFAULT_ANSWER_MAX_CHARS.toString())

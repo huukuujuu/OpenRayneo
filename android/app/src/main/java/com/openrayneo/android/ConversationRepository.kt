@@ -29,7 +29,19 @@ internal class ConversationRepository(context: Context) {
         .sortedByDescending { it.createdAt }
         private set
 
-    private var sequence = (records.map { it.changeSequence } + people.map { it.changeSequence }).maxOrNull() ?: 0L
+    /** Highest change sequence ever handed out, kept apart from the records so a skipped record cannot pull it back. */
+    private val sequenceMark = AtomicFile(File(folder, "sequence-mark"))
+    private var sequence = maxOf((records.map { it.changeSequence } + people.map { it.changeSequence }).maxOrNull() ?: 0L,
+        runCatching { String(sequenceMark.readFully()).trim().toLong() }.getOrNull()
+            // No usable mark (older build or damaged mark): with a record unreadable its sequence is unknown,
+            // so jump past any count used so far. Sequences only need to grow, not stay dense.
+            ?: if (unreadable.isNotEmpty() || sequenceMark.baseFile.exists()) System.currentTimeMillis() else 0L)
+    private fun nextSequence(): Long {
+        val stream = sequenceMark.startWrite()
+        try { stream.write((++sequence).toString().toByteArray()); sequenceMark.finishWrite(stream) }
+        catch (error: Exception) { sequenceMark.failWrite(stream); throw error }
+        return sequence
+    }
     init {
         // Older encrypted records keep their IDs/audio references and join the first full sync.
         people.filter { it.changeSequence == 0L }.forEach { savePerson(it) }
@@ -38,9 +50,9 @@ internal class ConversationRepository(context: Context) {
     private fun writePeople() = write("people", JSONObject().put("people", JSONArray(people.map { it.json() })))
     @Synchronized fun savePerson(person: VoicePerson) {
         val old = people.firstOrNull { it.id == person.id }
-        val updated = person.copy(revision = (old?.revision ?: 0) + 1, changeSequence = ++sequence)
+        val updated = person.copy(revision = (old?.revision ?: 0) + 1, changeSequence = nextSequence())
         people = people.filter { it.id != person.id }.map { if (person.self && it.self) it.copy(self = false,
-            revision = it.revision + 1, changeSequence = ++sequence) else it } + updated
+            revision = it.revision + 1, changeSequence = nextSequence()) else it } + updated
         writePeople()
     }
     @Synchronized fun removeVoice(personId: String) { people.firstOrNull { it.id == personId }?.let { savePerson(it.copy(samples = emptyList())) } }
@@ -78,7 +90,7 @@ internal class ConversationRepository(context: Context) {
         val segmentsChanged = old?.segments?.map { it.json().toString() } != record.segments.map { it.json().toString() }
         val changedDays = if (segmentsChanged) (old?.segments.orEmpty().map { old!!.timeOf(it) } + record.segments.map { record.timeOf(it) })
             .map { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString() }.toSet() else emptySet()
-        val saved = record.copy(revision = version, changeSequence = ++sequence, derived = derived,
+        val saved = record.copy(revision = version, changeSequence = nextSequence(), derived = derived,
             summaries = record.summaries.map { if (it.kind == "day_end" && it.day in changedDays) it.copy(stale = true) else it })
         write("session-" + saved.id, saved.json())
         records = (records.filter { it.id != saved.id } + saved).sortedByDescending { it.createdAt }
@@ -117,7 +129,7 @@ internal class ConversationRepository(context: Context) {
         val old = records.firstOrNull { it.id == item.recordId } ?: return false
         if (old.derived.any { it.id == item.id && it.revision >= item.revision }) return true
         val updated = item.copy(stale = item.stale || item.sourceRevision != old.revision)
-        val saved = old.copy(derived = old.derived.filter { it.id != item.id } + updated, changeSequence = ++sequence)
+        val saved = old.copy(derived = old.derived.filter { it.id != item.id } + updated, changeSequence = nextSequence())
         write("session-" + saved.id, saved.json())
         records = records.map { if (it.id == saved.id) saved else it }
         return true
