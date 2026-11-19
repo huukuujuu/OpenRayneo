@@ -63,6 +63,28 @@ internal class GlassesVoiceTransport(
         if (nativeActive && wakeId == expected && source != ConversationSource.NATIVE) send(0x0d, 2, JSONObject().put("rc", 2))
     }
     private var replaying = false
+    private var staleTaskReported: String? = null
+    /** Last LifeLog round start (161) or audio (163) of ours: tells whether LifeLog came back after a voice memo. */
+    private var lifeHeardAt = 0L
+    /** A re-sent LifeLog switch is a nudge: its refusal must not stop the running always-on record. */
+    private var rearmPending = false
+    /**
+     * The glasses' voice memo takes the microphone from LifeLog. If no LifeLog round or audio comes back within
+     * [REARM_WAIT_MS] after the memo, switch LifeLog on again; a fresh round (161) then replaces the dead one.
+     */
+    @Synchronized fun rearmLifeLog() {
+        if (source != ConversationSource.ALWAYS_ON) return
+        val since = System.currentTimeMillis()
+        main.postDelayed({
+            synchronized(this) {
+                if (source != ConversationSource.ALWAYS_ON || lifeHeardAt >= since) return@synchronized
+                trace("음성 메모 뒤 종일 기록 오디오가 오지 않아 다시 켬")
+                rearmPending = true
+                send(0x0f, 20, JSONObject().put("cmd", "life_log_switch")
+                    .put("payload", JSONObject().put("value", 1).put("mode", 0).put("data", "{\"delay\":2}")))
+            }
+        }, REARM_WAIT_MS)
+    }
     private fun replaySlice(expected: String?) {
         synchronized(this) {
             if (source != ConversationSource.NATIVE || wakeId != expected) { replaying = false; earlyAudio.clear(); return }
@@ -107,7 +129,9 @@ internal class GlassesVoiceTransport(
             val message = ProtocolCodec.message(frame.payload); val body = message.json?.let(::JSONObject) ?: return
             if (message.type == 21 && source == ConversationSource.ALWAYS_ON && body.optString("cmd") == "life_log_switch_result") {
                 val code = body.optJSONObject("payload")?.optInt("value", -1) ?: -1
-                if (code != 0) failure("안경이 종일 기록을 거부함: " + when (code) { 1 -> "마이크 권한 꺼짐"; 2 -> "안경 접힘"; 3 -> "배터리 부족"; else -> "기기 코드 $code" })
+                val nudge = rearmPending; rearmPending = false
+                if (code != 0 && nudge) trace("종일 기록 다시 켜기 응답 코드 $code (기록은 계속)")
+                else if (code != 0) failure("안경이 종일 기록을 거부함: " + when (code) { 1 -> "마이크 권한 꺼짐"; 2 -> "안경 접힘"; 3 -> "배터리 부족"; else -> "기기 코드 $code" })
             }
             return
         }
@@ -138,15 +162,23 @@ internal class GlassesVoiceTransport(
                 if (sid.isNotBlank() && sid != lastReply) return
                 advancedReply = lastReply; wakeId = UUID.randomUUID().toString(); wake()
             }
-            161 -> if (source == ConversationSource.ALWAYS_ON && lifeTask == null) {
-                val id = UUID.randomUUID().toString().lowercase(); lifeTask = id
+            161 -> if (source == ConversationSource.ALWAYS_ON) {
+                // A new round while ours is still open: the glasses dropped it (e.g. their voice memo paused LifeLog
+                // without an end). Ignoring this left LifeLog "on" on the glasses with no audio ever sent.
+                if (lifeTask != null) { trace("종일 기록: 안경이 새 라운드를 시작해 이전 라운드를 닫고 이어 받음"); lifeTask = null; endRound(false) }
+                val id = UUID.randomUUID().toString().lowercase(); lifeTask = id; lifeHeardAt = System.currentTimeMillis()
                 beginRound()
                 send(0x0d, 162, JSONObject().put("taskId", id).put("idleTimeoutSec", 300))
                 send(0x0d, 168, JSONObject().put("inRealtimePage", false))
             }
-            163 -> if (source == ConversationSource.ALWAYS_ON && lifeTask != null) {
+            163 -> if (source == ConversationSource.ALWAYS_ON) {
                 val task = body.optString("taskId")
-                if (task.isNotBlank() && task != lifeTask) return
+                if (lifeTask == null || task.isNotBlank() && task != lifeTask) {
+                    val key = task.ifBlank { "-" }
+                    if (staleTaskReported != key) { staleTaskReported = key; trace("종일 기록: 열린 라운드가 아닌 오디오($key)라 무시") }
+                    return
+                }
+                lifeHeardAt = System.currentTimeMillis()
                 val bytes = message.audio ?: return
                 val count = body.optInt("frameCount", bytes.size / 240)
                 if (count !in 1..31 || bytes.size != count * 240) { failure("종일 기록 오디오 프레임 길이 이상으로 이번 라운드를 중지함"); return }
@@ -259,3 +291,4 @@ internal class BargeInMeter {
 private const val EARLY_AUDIO_FRAMES = 1_000
 private const val REPLAY_SLICE = 100
 private const val REPLAY_SLICE_MS = 400L
+private const val REARM_WAIT_MS = 8_000L

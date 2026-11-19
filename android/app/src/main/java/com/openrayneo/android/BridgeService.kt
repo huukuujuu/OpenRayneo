@@ -208,6 +208,9 @@ internal class BridgeService : Service() {
         conversations.backfillHold = { translator.active }
         voiceMemo = VoiceMemo(this, conversations.repository, connection::sendFrame, ::onLog) {
             conversations.refreshRecords(); conversations.configurationChanged()
+            // The memo had the microphone: LifeLog stays "on" on the glasses but sent nothing afterwards (device).
+            if (conversations.state.running && conversations.state.source == ConversationSource.ALWAYS_ON && !conversations.state.stopping)
+                voiceTransport.rearmLifeLog()
         }
         display = GlassesDisplay(connection::sendFrame,
             { task, delay -> main.postDelayed(task, delay) }, { main.removeCallbacks(it) }, ::onLog,
