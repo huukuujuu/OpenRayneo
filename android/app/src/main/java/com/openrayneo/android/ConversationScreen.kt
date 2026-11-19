@@ -299,7 +299,7 @@ private fun SpeakerBindingDialog(model: AppModel, record: ConversationRecord, se
             TextButton(onClick = { model.selectedContact = null; actions.contact() }) { Text("연락처에서 선택") }
             Row { Checkbox(rememberVoice, { rememberVoice = it }, enabled = all && record.speakerSamples[segment.speaker]?.isNotEmpty() == true)
                 Text("이 목소리를 기억해 다음에 식별") }
-            Note("자동 수집됨: ${record.speakerSamples[segment.speaker].orEmpty().size}개 음성 지문. 체크하면 이름 붙인 목소리가 다음 세션 매칭에 사용되고, 끄면 이번 라벨만 변경됩니다. 유사도는 목소리 비교 점수입니다.")
+            Note("자동 수집됨: ${record.speakerSamples[segment.speaker].orEmpty().size}개 음성 지문. 체크하면 이 목소리를 인물에 저장해 내 목소리와 헷갈리지 않게 비교하는 데 쓰고(자동 표시는 내 목소리만), 끄면 이번 라벨만 변경됩니다. 유사도는 목소리 비교 점수입니다.")
         }
     }, confirmButton = { TextButton(onClick = {
         val person = people.firstOrNull { it.id == personId } ?: VoicePerson(name = name.trim(), contactUri = picked?.uri)

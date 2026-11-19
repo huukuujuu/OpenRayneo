@@ -135,7 +135,9 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
             if (extractor.isReady(stream)) extractor.compute(stream) else null
         } finally { stream.release() }
     }
-    private fun candidates(vector: FloatArray): List<VoiceMatch> = voiceIdentityReferences(people(), MODEL)
+    // Named people (never auto-created anonymous ones) are scored so another enrolled voice can beat the user's own,
+    // but only the user's own voice is ever accepted automatically; everyone else stays a per-record label (A, B, ...).
+    private fun candidates(vector: FloatArray): List<VoiceMatch> = voiceIdentityReferences(people().filter { !it.unnamed }, MODEL)
         .map { (person, samples) -> VoiceMatch(person.id, samples.map { cosine(vector, it) }
             .sortedDescending().take(3).average().toFloat()) }.sortedByDescending { it.score }
     private fun accepted(matches: List<VoiceMatch>): VoiceMatch? = matches.firstOrNull()?.takeIf {
@@ -143,7 +145,8 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
     }
     private fun person(vector: FloatArray): Pair<String?, Float>? {
         val matches = candidates(vector)
-        return matches.firstOrNull()?.let { accepted(matches)?.personId to it.score }
+        val self = people().firstOrNull { it.self && it.mergedInto == null }?.id
+        return matches.firstOrNull()?.let { accepted(matches)?.personId?.takeIf { id -> id == self } to it.score }
     }
     private fun cluster(vector: FloatArray, endMS: Long): Cluster {
         val nearest = clusters.map { cluster -> cluster to cluster.samples.maxOf { cosine(vector, it) } }.maxByOrNull { it.second }

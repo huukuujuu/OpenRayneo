@@ -232,6 +232,8 @@ internal class AppModel(application: Application) : AndroidViewModel(application
         val old = settings.read()
         val updated = JSONObject(old.toString())
         values.forEach { (key, value) -> updated.put(key, value.trim()) }
+        // A cleared summary address/name means "use the default"; compare and keep the effective value.
+        with(settings) { updated.withDefaults() }
         val mobileChanged =
             listOf("modelUrl", "modelName", "modelKey", "mobileAgentBackend").any {
                 old.optString(it) != updated.optString(it)

@@ -382,11 +382,10 @@ internal class BridgeService : Service() {
             latestRealtimeRequest = ++nextAnswer
             input.put("serviceInstance", serviceInstance).put("displayRevision", state.revision).put("realtimeRequest", latestRealtimeRequest)
         }
-        // The glasses window shows only a few lines; ask the Agent to fit them (0 = no limit).
-        val maxChars = settings.read().optString("answerMaxChars").toIntOrNull() ?: DEFAULT_ANSWER_MAX_CHARS
-        val limit = if (maxChars > 0) "\n[안경 표시] 답변은 ${maxChars}자 이내. 더 필요하면 요약하고, 자세히 요청받을 때만 이어서 말한다." else ""
+        // The glasses window shows only a few lines; the DSH plugin asks the Agent to fit them (0 = no limit).
+        input.put("answerMaxChars", settings.read().optString("answerMaxChars").toIntOrNull() ?: DEFAULT_ANSWER_MAX_CHARS)
         // The relay's encrypted outbox accepts work even while DSH or the network is unavailable.
-        agent.harness.submit(request.text, request.context + limit, input = input) { result ->
+        agent.harness.submit(request.text, request.context, input = input) { result ->
             result.fold({ answer -> deliverExternalVoice(request.text, answer, input) }, { conversations.report(it.message ?: "외부 Agent 작업이 완료되지 않음") })
         }
         return true

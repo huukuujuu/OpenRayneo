@@ -2,20 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.openrayneo.android
 
-import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 
 /**
- * Facts for the external phone Agent; the companion performs no semantic routing.
+ * Facts for the external phone Agent, sent as the request context JSON. The DSH plugin owns the prompts
+ * (integrations/dsh-go/lib/voice-modes.json), decides whether an answer is needed and renders the speech once.
  * Kept compact on purpose: every field here is model input on each voice turn, so only what the
  * Agent needs to answer is sent (text, likely speaker, age when it matters, the previous exchange).
  */
-internal class VoiceModePolicy(context: Context) {
-    private val prompts = context.assets.open("assistant/voice-modes.json").bufferedReader().use { JSONObject(it.readText()) }
-    val agentPrompt: String = prompts.getString("agent")
+internal class VoiceModePolicy {
     fun input(source: ConversationSource, segments: List<SpeechSegment>, people: List<VoicePerson>,
               previous: List<String>, previousReply: String): JSONObject {
         val now = System.currentTimeMillis()

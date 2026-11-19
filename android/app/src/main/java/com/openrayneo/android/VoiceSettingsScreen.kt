@@ -109,13 +109,18 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
         SectionLabel("현재 위치 및 날씨")
         Note("로컬 Agent는 도구로 날씨를 조회할 수 있으며 위치 도구에는 위치 권한이 필요합니다. 백그라운드 음성은 안경 연결 포그라운드 서비스를 사용합니다.")
         TextButton(onClick = actions.locationPermission) { Text("위치 접근 허용") }
-        SectionLabel("채널 및 식별 판단")
-        Note("일반 2채널 동시 처리: 채널 1은 기본 본인, 채널 2는 별도 식별. 종일 기록과 기타 모노 오디오는 전체 화자 식별. 이 옵션은 직접 등록에만 쓰이며 기록 정책은 바뀌지 않습니다.")
-        VoiceField(model, "audioChannel", "등록 진단 채널: 0/1 채널 1, 2 채널 2", "0")
-        VoiceField(model, "speakerThreshold", "목소리 매칭 임계값 (내 목소리로 보정 필요)", "0.7")
+        SectionLabel("내 목소리 인식")
+        Note("누가 말했는지는 이렇게 정합니다. 실시간 듣기(2채널)에서는 입가 마이크인 채널 1을 항상 '나'로 봅니다. " +
+            "종일 기록처럼 마이크가 하나뿐인 녹음은 목소리 특징을 등록된 내 목소리와 비교해 '나'인지만 판단하고, 나머지 사람은 기록마다 A, B…로 표시합니다. " +
+            "다른 사람은 자동으로 인물을 만들지 않으며, 기록 화면에서 직접 이름을 붙일 수 있습니다.")
+        VoiceField(model, "audioChannel", "목소리 등록에 쓸 마이크 (1 = 입가 마이크, 권장 · 2 = 바깥 마이크)", "1")
+        Note("'내 목소리 등록'을 할 때 어느 마이크 소리를 저장할지 정합니다. 평소 기록과 실시간 듣기에는 영향이 없습니다. 0을 넣어도 1과 같습니다.")
+        VoiceField(model, "speakerThreshold", "내 목소리로 인정할 닮은 정도 (0~1, 기본 0.7)", "0.7")
+        Note("녹음된 목소리가 등록된 내 목소리와 이 값 이상 닮아야 '나'로 표시합니다. 내 말이 자주 A, B로 나오면 0.05씩 내리고(예: 0.65), " +
+            "다른 사람 말이 '나'로 나오면 올리세요.")
         SectionLabel("기록 요약")
-        VoiceField(model, "modelUrl", "요약 모델 서비스 주소")
-        VoiceField(model, "modelName", "요약 모델 이름")
+        VoiceField(model, "modelUrl", "요약 모델 서비스 주소 (비우면 Bailian 국제 기본값)", AppSettings.DEFAULT_MODEL_URL)
+        VoiceField(model, "modelName", "요약 모델 이름", AppSettings.DEFAULT_MODEL_NAME)
         VoiceField(model, "modelKey", "요약 모델 API Key", secret = true)
         StructuredVoicePrompt(model, "memoryPrompt", "기억 귀속 및 정리", ConversationPrompts.memory)
         Note("실시간 번역(한국어 ↔ 영어)도 이 모델과 위에서 고른 ASR 엔진을 사용합니다.")

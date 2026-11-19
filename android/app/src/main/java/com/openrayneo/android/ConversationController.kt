@@ -47,7 +47,7 @@ internal class ConversationController(private val context: Context, private val 
     private val queuedSamples = AtomicInteger()
     val repository = ConversationRepository(context)
     val recordings = MeetingAudioStore(context)
-    val modePolicy = VoiceModePolicy(context)
+    val modePolicy = VoiceModePolicy()
     @Volatile var state = ConversationState(people = repository.people, records = repository.records,
         error = repository.unreadable.takeIf { it.isNotEmpty() }?.let { "읽을 수 없는 기록 ${it.size}개는 원본 파일을 그대로 두고 목록에서 뺐습니다: ${it.joinToString()}" }); private set
     @Volatile private var generation = 0
@@ -291,10 +291,10 @@ internal class ConversationController(private val context: Context, private val 
         val old = record ?: return
         val source = engines[channel] ?: return
         val mapping = old.speakerPeople.toMutableMap()
-        source.speakerSamples().forEach { (label, vectors) -> if (label !in mapping) {
+        source.speakerSamples().forEach { (label, _) -> if (label !in mapping) {
             val evidence = source.evidence.firstOrNull { it.speaker == label && it.embedding != null && !it.mixed }
             val match = evidence?.let { source.assignment(it.beginMS, it.endMS) }
-            mapping[label] = match?.personId ?: repository.rememberUnnamed(vectors).id
+            match?.personId?.let { mapping[label] = it }
         } }
         record = old.copy(speakerPeople = mapping, speakerSamples = old.speakerSamples + source.speakerSamples())
     }
@@ -350,7 +350,7 @@ internal class ConversationController(private val context: Context, private val 
         if (state.source == ConversationSource.ALWAYS_ON && !liveBackfill && !replaying && rounds.isNotEmpty()) return
         val input = pendingAgent.toList(); val token = generation; val source = state.source; val contextGeneration = agentContextGeneration
         val payload = modePolicy.input(source, input, repository.people, previous, previousReply).put("recordId", record?.id).put("recordRevision", record?.revision)
-        val voice = VoiceRequest(input.joinToString(" ") { it.text }, modePolicy.agentPrompt + "\n" + payload, source, input.lastOrNull()?.roundId,
+        val voice = VoiceRequest(input.joinToString(" ") { it.text }, payload.toString(), source, input.lastOrNull()?.roundId,
             true, record?.id, record?.revision ?: 1, input.any { it.processingMode == "backfill" })
         dispatching = true; val ids = input.map { it.id }.toSet(); pendingAgent.removeAll { it.id in ids }
         main.post {
@@ -443,7 +443,7 @@ internal class ConversationController(private val context: Context, private val 
         if (pendingAgent.isNotEmpty()) {
             val input = pendingAgent.toList(); val source = state.source
             val payload = modePolicy.input(source, input, repository.people, previous, previousReply).put("recordId", finished?.id).put("recordRevision", finished?.revision)
-            val voice = VoiceRequest(input.joinToString(" ") { it.text }, modePolicy.agentPrompt + "\n" + payload, source, input.lastOrNull()?.roundId,
+            val voice = VoiceRequest(input.joinToString(" ") { it.text }, payload.toString(), source, input.lastOrNull()?.roundId,
                 true, finished?.id, finished?.revision ?: 1, input.any { it.processingMode == "backfill" })
             val contextGeneration = agentContextGeneration
             main.post { if (contextGeneration == agentContextGeneration) request(voice) }

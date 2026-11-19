@@ -16,8 +16,10 @@ import java.util.concurrent.TimeUnit
 /**
  * Korean ↔ English live interpretation on the phone. The glasses prompt page is only the window and
  * microphone: glasses PCM → Bailian ASR (ko,en hints, interim captions) → chat-completions translation.
- * Display: top line = latest speech (partial or final), bottom line = translation of the latest final
- * sentence ("…" while pending). Only the newest final is translated, so the glasses never fall behind.
+ * Display: top line = latest speech (partial or final), bottom line = translation of the latest piece
+ * ("…" while pending). Long unbroken speech (a video, a lecture) rarely ends a sentence, so the partial
+ * text is also cut into pieces at punctuation, after [CHUNK_MS] or at [CHUNK_CHARS] and translated as it goes.
+ * Only the newest piece is translated, so the glasses never fall behind.
  * All callbacks are funnelled onto [main]; nothing is stored or added to records.
  */
 internal class LiveTranslator(
@@ -45,6 +47,9 @@ internal class LiveTranslator(
     private var sourceLine = ""
     private var targetLine = ""
     private var failures = 0
+    /** Characters of the current partial already sent for translation, and when the last piece was cut (0 = none yet). */
+    private var committed = ""
+    private var pieceAt = 0L
     private var restartTask: Runnable? = null
 
     /** Throws with a user-facing message when ASR or the translation model is not configured. */
@@ -67,7 +72,7 @@ internal class LiveTranslator(
             active = true
             resampler = ConversationAudio()
         }
-        history.clear(); latestFinal = 0; sourceLine = ""; targetLine = ""; failures = 0
+        history.clear(); latestFinal = 0; sourceLine = ""; targetLine = ""; failures = 0; committed = ""; pieceAt = 0L
         status = LISTENING
         openASR()
         changed()
@@ -152,17 +157,44 @@ internal class LiveTranslator(
         heard()
         sourceLine = text
         render()
+        // The recognizer rewrote text that was already sent: keep only the part that still matches.
+        if (!text.startsWith(committed)) { committed = committed.commonPrefixWith(text); if (committed.isEmpty()) pieceAt = 0L }
+        val pending = text.substring(committed.length)
+        val now = System.currentTimeMillis()
+        // The time limit counts from the first partial of a sentence, not from the silence before it.
+        if (pieceAt == 0L) pieceAt = now
+        val boundary = pending.indexOfLast { it in BOUNDARIES } + 1
+        val cut = when {
+            boundary >= MIN_CHUNK_CHARS -> boundary
+            pending.length >= CHUNK_CHARS || now - pieceAt >= CHUNK_MS && pending.length >= MIN_CHUNK_CHARS ->
+                // Keep the last (still changing) word for the next piece.
+                pending.lastIndexOf(' ').takeIf { it >= MIN_CHUNK_CHARS } ?: pending.length
+            else -> return
+        }
+        val piece = pending.take(cut).trim()
+        committed += pending.take(cut); pieceAt = now
+        if (piece.isNotEmpty()) translatePiece(token, piece)
     }
 
     private fun finished(token: Int, text: String) {
         if (token != generation || !active) return
         heard()
         // Neither Korean nor English (typically noise or Korean misread as Chinese): never show or translate it.
-        if (misheard(text)) return
+        if (misheard(text)) { committed = ""; pieceAt = 0L; return }
+        // Pieces of this sentence were already translated from the partial text; translate only what is left.
+        // If the final rewrote those words (e.g. filler removal), translate it whole rather than lose words.
+        val rest = if (committed.isNotEmpty() && text.startsWith(committed)) text.drop(committed.length).trim() else text
+        committed = ""; pieceAt = 0L
+        sourceLine = text
+        if (rest.isEmpty()) { render(); return }
+        translatePiece(token, rest)
+    }
+
+    private fun translatePiece(token: Int, text: String) {
         val sequence = ++latestFinal
         val from = if (isKorean(text)) "Korean" else "English"
         val to = if (from == "Korean") "English" else "Korean"
-        sourceLine = text; targetLine = "…"
+        targetLine = "…"
         render()
         val context = history.toList()
         val snapshot = config
@@ -214,6 +246,10 @@ internal class LiveTranslator(
         private const val MAX_FAILURES = 5
         private const val SOURCE_LIMIT = 80
         private const val TARGET_LIMIT = 120
+        private const val MIN_CHUNK_CHARS = 8
+        private const val CHUNK_CHARS = 60
+        private const val CHUNK_MS = 3_000L
+        private val BOUNDARIES = setOf('.', '?', '!', ',', '。', '？', '！', '，', '、')
         fun clip(text: String, limit: Int): String { val value = text.trim(); return if (value.length <= limit) value else "…" + value.takeLast(limit - 1) }
         /** True when the text has no Hangul or Latin letters but does have CJK ideographs or kana. */
         fun misheard(text: String) = text.none { it in '가'..'힣' || it in 'a'..'z' || it in 'A'..'Z' } &&

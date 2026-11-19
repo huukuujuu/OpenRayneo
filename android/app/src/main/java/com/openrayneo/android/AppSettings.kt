@@ -26,11 +26,22 @@ internal class AppSettings(context: Context) {
     }
 
     fun read(): JSONObject {
-        val encrypted = preferences.getString("data", null) ?: return JSONObject()
+        val encrypted = preferences.getString("data", null) ?: return JSONObject().withDefaults()
         val bytes = Base64.decode(encrypted, Base64.NO_WRAP)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
-        return JSONObject(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8))
+        return JSONObject(String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)).withDefaults()
+    }
+
+    /** Blank summary-model address/name fall back to Bailian (international, OpenAI-compatible); only the key must be typed. */
+    fun JSONObject.withDefaults() = apply {
+        if (optString("modelUrl").isBlank()) put("modelUrl", DEFAULT_MODEL_URL)
+        if (optString("modelName").isBlank()) put("modelName", DEFAULT_MODEL_NAME)
+    }
+
+    companion object {
+        const val DEFAULT_MODEL_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        const val DEFAULT_MODEL_NAME = "qwen-plus"
     }
 
     fun save(settings: JSONObject) {
