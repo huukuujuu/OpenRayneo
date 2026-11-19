@@ -9,6 +9,28 @@ internal data class AnswerContent(val ref: AnswerRef, val question: String, val 
     val pages: List<String> get() = answerPages(text)
 }
 internal const val CAPTION_TRANSLATED = "captions-translated"
+/** The glasses' caption window holds about 100 Hangul characters: one screen, the sentence on top and its translation below. */
+internal const val CAPTION_SCREEN_CHARS = 100
+private const val CAPTION_TRANSLATION_CHARS = 64
+private val LINE_BREAKS = Regex("[\\r\\n]+")
+internal fun captionScreen(source: String, target: String): String {
+    val s = source.trim().replace(LINE_BREAKS, " "); val t = target.trim().replace(LINE_BREAKS, " ")
+    if (t.isEmpty()) return clipTail(s, CAPTION_SCREEN_CHARS)
+    val translation = clipHead(t, CAPTION_TRANSLATION_CHARS)
+    return if (s.isEmpty()) translation else clipTail(s, CAPTION_SCREEN_CHARS - translation.length - 1) + "\n" + translation
+}
+/** Keeps the start (a translation reads from its beginning); never splits a surrogate pair. */
+private fun clipHead(text: String, limit: Int): String {
+    if (text.length <= limit) return text
+    val kept = text.take(limit - 1)
+    return (if (kept.last().isHighSurrogate()) kept.dropLast(1) else kept) + "…"
+}
+/** Keeps the end (the words being spoken now); never splits a surrogate pair. */
+private fun clipTail(text: String, limit: Int): String {
+    if (text.length <= limit) return text
+    val kept = text.takeLast(limit - 1)
+    return "…" + (if (kept.first().isLowSurrogate()) kept.drop(1) else kept)
+}
 // About 120 characters fit with the question line: question ≤ 30, page ≤ 80 plus " (i/n)".
 private const val ANSWER_PAGE_CHARS = 80
 internal fun answerPages(text: String): List<String> {
