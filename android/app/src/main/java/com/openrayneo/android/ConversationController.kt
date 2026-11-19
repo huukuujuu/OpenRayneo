@@ -48,7 +48,8 @@ internal class ConversationController(private val context: Context, private val 
     val repository = ConversationRepository(context)
     val recordings = MeetingAudioStore(context)
     val modePolicy = VoiceModePolicy(context)
-    @Volatile var state = ConversationState(people = repository.people, records = repository.records); private set
+    @Volatile var state = ConversationState(people = repository.people, records = repository.records,
+        error = repository.unreadable.takeIf { it.isNotEmpty() }?.let { "읽을 수 없는 기록 ${it.size}개는 원본 파일을 그대로 두고 목록에서 뺐습니다: ${it.joinToString()}" }); private set
     @Volatile private var generation = 0
     @Volatile private var closing = false
     @Volatile private var deferredProcessing = false

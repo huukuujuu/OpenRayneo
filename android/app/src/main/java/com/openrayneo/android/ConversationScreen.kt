@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.openrayneo.android
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -43,6 +44,8 @@ internal fun ConversationScreen(model: AppModel, actions: UiActions, open: (Stri
     val date = LocalDate.parse(dateText)
     val record = state.records.firstOrNull { it.id == selected }
     if (record != null) {
+        // Registered after the app-level handler, so system back closes the detail first and keeps the list filters.
+        BackHandler { selected = null }
         ConversationDetail(model, record, actions) { selected = null }
         return
     }
@@ -240,7 +243,7 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
             SectionLabel("원문 타임라인")
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FilterChip(filter == null, { filter = null }, label = { Text("전체") })
-                record.segments.map { it.speaker }.distinct().take(6).forEach { name ->
+                record.segments.map { it.speaker }.distinct().forEach { name ->
                     FilterChip(filter == name, { filter = name }, label = { Text(displayLabel(name)) })
                 }
             }

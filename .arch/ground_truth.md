@@ -24,7 +24,7 @@
 | 채널과 신원 | ORPCM1 이전 mono / ORPCM2 2채널 호환. 실제 2채널은 ch1 기본 본인, ch2 완전 speaker, 네이티브/AON mono는 전부 처리. Opus 인코딩 채널 수와 물리 출처는 따로 본다. |
 | 인물 수정 | Android 37은 명시적 바인딩으로 출처 익명 화자를 병합하고 과거 ID를 보존한다. 후보 필터는 이미 이름 붙은 인물과 같은 model이면서 완전히 같은 익명 중복 참조만 거른다. 짧은 구간은 남기고, 겹침은 실제 교집합만 표시한다. |
 | 현재 산출물 | Android CI(`main`과 `android-only` 푸시 시 실행) 빌드: versionCode=1000+GITHUB_RUN_NUMBER(로컬 37), BuildConfig.GIT_COMMIT을 설정 화면에 표시, versionName=1.(run-23).0으로 매번 올라가며 Nextcloud 파일 이름에 씀(로컬 1.2.0-beta.4), DSH 0.1.8. Android 36 release를 되돌리기용으로 두며 경로는 [운영 가이드](../docs/runbook.md)를 본다. |
-| 검증 범위 | 빌드/서명, 저장/API/동기화, 일부 실사용형 검사를 마쳤고 독립 리뷰도 닫혔다. 음성 모델, 실제 지속 처리량, 전력, 펌웨어별 하드웨어 동작은 실제 입력으로 계속 검수한다. |
+| 검증 범위 | 현재 `47fb0d2`를 WSL에서 다시 검사: Debug/Release 빌드, 양쪽 lint, APK 서명/구성 검사 통과. lint는 변형별 오류 0, 경고 24, 힌트 2. 단위 테스트는 소스가 없어 0건 실행. DSH `npm ci`는 잠금 파일 불일치로 실패했고 임시 의존성 환경의 모듈 검사 15건은 통과했다. 실제 기기·음성·백그라운드 검수는 미실시. 아래 재검증 결과를 현재 기준으로 사용하며, 과거 저장/API/동기화 실측은 해당 과거 기준의 증거로만 유지한다. |
 
 **현재 핵심 문제: 실제 사람 음성 지문 놓침과 한 사람 오분류.** 실제 59.64초 네이티브 입력을 저장했고, 사용자는 본인만 말했다고 확인했다. 결과는 5구간/3그룹, 최고 일치 0.624(나머지 0.602/0.399)이며 현재 기준값은 0.70이다. 등록 참조 6개를 하나씩 빼고 교차 검증하니 2개가 0.659/0.674에 그쳤다. 같은 네이티브 녹음의 A/B 상호 cos는 0.641이다. 짧은 문장 특징의 불안정과 등록/매칭 기준의 불일치는 실증되었고, 등록 ch1과 네이티브 mono 수음 차이가 따로 얼마나 기여하는지는 아직 검증이 필요하다. 이 결과로 모델/기준값/프로필을 바꾸지는 않았다.
 
@@ -37,3 +37,91 @@
 - `android/app/src/main/java/com/openrayneo/android/`: 휴대폰 서비스, 오디오/인물/기록, API와 동기화. `integrations/dsh-go/`: 외부 Agent 어댑터.
 - [핵심 프로토콜](../docs/protocol.md)은 메시지/연결 계약과 원시 역분석 색인을, [운영 가이드](../docs/runbook.md)는 빌드, 설치, 장애 복구를 관리한다.
 - 유일한 이전 소스 차이는 Ubuntu `openrayneo-lab` 보관본에 있다. `analysis/`는 원시 역분석 증거, 모델 실험 소스, 로컬 지표를 보관하며, 빌드 산출물과 사용자 Library 자료는 따로 관리한다. 프로토콜/CLI의 전송, 기기 확인, 착용 시 보이는 효과는 각각 검증한다.
+
+## 프로젝트 결함 및 UI·UX 검토
+
+검토 기준: 2026-11-19, `android-only`의 `47fb0d28170b97bc1b9570d525f127195bd5b04f`.
+최초 검토는 `a914718`의 Android/Mac 소스를 대상으로 10개 항목을 정리했다. 이후 Android 전용 전환과 문서 교체로 해당 절이 사라져, 같은 ID로 현재 상태와 근거를 복원했다. 이번 작업은 검사와 문서화이며 앱 코드 수정은 하지 않았다.
+
+**현재 결론:** 기존 10개 항목 중 Android 문제 7개는 2026-11-19 후속 수정에서 코드로 고쳤고(WSL `assembleDebug`+`lintDebug` 통과, lint 종류별 개수 변화 없음, 독립 리뷰 지적 반영), 언어 표시 1개는 코드에서 개선되었다. Mac 문제 2개는 브랜치에서 대상 코드가 제거되어 현재 범위 밖이다. 새로 확인한 DSH 잠금 파일 문제 R11도 고쳤다. 수정 항목 모두 실기기 동작 확인은 남아 있다. P1은 데이터 보존/서비스 가용성, P2는 주요 기능·개발 재현성/사용성, P3은 표현 일관성의 우선순위다. 아래 UI 증상과 장애 경로는 실제 기기 재현이 아닌 소스 검토 결과다.
+
+아래 Android 파일명은 `android/app/src/main/java/com/openrayneo/android/`를 기준으로 하며 줄 번호는 `47fb0d2` 기준이다.
+
+| ID | 우선순위·상태 | 근거, 영향, 개선·확인 기준 |
+| --- | --- | --- |
+| R01 | P1 · 수정됨(코드) | `ConversationRepository.kt:24–25,138–144`가 시작 시 전체 기록을 복호화/파싱하며 개별 실패를 분리하지 않는다. `ConversationController.kt:48` → `BridgeService.kt:117`의 초기화로 예외가 전파될 수 있어 손상 기록 하나가 연결·기록 서비스 시작을 막을 위험이 있다. 손상 원본을 보존·표시하고 정상 기록과 서비스를 이용 가능하게 해야 한다. 개발용 복제 데이터 한 파일의 손상/읽기 실패로 검증할 것. 사용자 데이터 손상은 관측되지 않았다. **수정:** 읽기/복호화에 실패한 `session-*.enc`는 건너뛰고 파일은 그대로 두며, 개수와 파일명을 기록 화면 오류로 표시한다. 인물 파일 실패는 덮어쓰기 위험 때문에 그대로 실패시킨다. |
+| R02 | P1 · 수정됨(코드) | `RecordSyncServer.kt:20,34,38–41,56`의 4스레드 풀에 accept와 처리를 함께 넣고, 수락한 소켓/대기 작업 수를 제한하지 않는다. timeout은 처리 진입 후 적용되며 인증 전 연결도 자원을 점유한다. 느린 연결 집중 시 정상 동기화 지연과 자원 누적 위험. 수락 단계 슬롯 제한과 전체 요청 기한이 필요하다. 격리 환경에서 열린 소켓 상한과 정상 요청/중지 동작을 확인할 것. 실제 LAN 부하 실험은 하지 않았다. **수정:** accept 전용 스레드, 슬롯 4개 세마포어(초과 연결은 즉시 닫음), 토큰·출처 확인 전 20초 전체 기한. 종료 경합의 `RejectedExecutionException`도 슬롯을 반환한다. |
+| R03 | P1 · 현재 범위 제외 | 이전 `a914718`의 `Sources/OpenRayneoBridge/TeleprompterLibraryPanel.swift:132–145,218–244`: 자동 저장 실패 반환값을 버리고 다른/새 원고로 전환하여 미저장 초안을 덮어쓰는 경로. 저장 성공 확인 후에만 전환하도록 하는 것이 개선안이었다. `78bbfa7`에서 Mac 코드 제거. 수정 완료가 아니라 대상 제거로 분류한다. |
+| R04 | P2 · 수정됨(코드) | `VoiceSettingsScreen.kt:29–33,128–136`의 화면 엔진은 저장된 `config`, 저장 동작은 지속되는 `formDrafts`를 참조한다. 엔진 A 저장 → B 선택 → 미저장 이탈 → 재진입하면 화면은 A, 초안은 B가 될 수 있다. 단일 초안 상태로 통일하고 재진입/회전 후 표시·모델 안내·저장 엔진이 같은지 확인할 것. **수정:** 라디오 선택을 `formDrafts`에서만 읽어 표시·저장 엔진이 같다. |
+| R05 | P2 · 수정됨(코드) | `CompanionApp.kt:52–55`: `LaunchedEffect(model.notice)`가 `notice=null`로 자신의 키를 바꾸고 `showSnackbar`를 호출한다. 재구성 때 효과가 취소되어 저장/복사 완료 안내가 짧게 사라질 위험. 안정적 이벤트 소비 또는 표시 종료 후 안전한 소비가 필요하다. 연속 알림과 실제 표시 시간을 기기에서 검증할 것. **수정:** 스낵바가 끝난 뒤에만 같은 알림을 지운다. |
+| R06 | P2 · 수정됨(코드) | `ConversationScreen.kt:28,45–47`의 상세 선택을 상위 `CompanionApp.kt:39–50`의 뒤로 가기가 알지 못하고 `tab=0`으로 이동한다. 상세에서 시스템 뒤로 가기가 목록 대신 안경 탭으로 간다. 상세 화면이 먼저 뒤로 가기를 소비해야 하며 화면 내 버튼과 시스템 제스처 모두 기존 날짜/검색을 보존한 목록으로 돌아와야 한다. **수정:** 상세 화면 안의 `BackHandler`가 먼저 상세를 닫는다. |
+| R07 | P2 · 수정됨(코드) | `CompanionLibraryScreen.kt:78–81,91–92,101`: 원고 초안은 `remember`에만 있으며 다른 원고 선택/새 원고가 즉시 덮어쓴다. 재생성·이탈·전환으로 미저장 초안이 유실될 수 있다. ViewModel/초안 저장소와 저장·폐기 선택을 제공하고 회전/뒤로 가기/전환별 보존을 확인할 것. **수정:** 원고 초안을 `rememberSaveable` + `SaveableStateProvider("teleprompter")`로 보존하고, 미저장 변경이 있으면 원고 전환/새 원고 전에 버리기 확인을 띄운다. |
+| R08 | P2 · 수정됨(코드) | `ConversationScreen.kt:243`의 `distinct().take(6)` 때문에 7번째 이후 화자는 개별 필터로 선택할 수 없다. 전체 타임라인은 남는다. 임의 상한 제거 또는 전체 화자 선택기가 필요하며 7명 이상 기록으로 확인할 것. **수정:** 화자 칩 상한 제거(가로 스크롤). |
+| R09 | P2 · 현재 범위 제외 | 이전 `a914718`의 `TeleprompterLibraryPanel.swift:260–271,406`: 확인 없는 삭제가 로컬 휴지통 이동과 안경 삭제 동기화로 이어짐. 확인/실행 취소와 복구 안내가 개선안이었다. 로컬 휴지통 복구가 가능하여 영구 삭제로 분류하지 않았다. Mac 제거로 현재 범위 밖이다. |
+| R10 | P3 · 코드 개선 확인 | 이전 수동 사유 `手动标注`의 한국어 화면 직접 노출. 현재 `ConversationModels.kt:10–20`에 과거 값 보존/표시 변환이 있고, `ConversationScreen.kt:172`가 `displayLabel`을 사용한다. `ConversationRepository.kt:90`은 한국어 상수를 저장하며 파서는 과거/현재 수동 사유를 모두 인식한다. 양쪽 빌드 통과, 실기기에서 과거 기록 표시 확인은 남아 있다. |
+| R11 | P2 · 수정됨(실행 확인) | DSH `npm ci --ignore-scripts --no-audit --no-fund` 실패. 잠금 파일에 `@deepseek-ai/dsh-storage-domain`과 그 의존성 해석이 누락되어 깨끗한 재설치를 재현할 수 없다. 오류에는 storage-domain/storage `0.2.2-rc.5`와 zod 해석 누락이 보고되었다. 해당 잠금 파일과 peer 의존성 선언은 Claude 작업 전부터 같은 상태라 이번 번역 변경의 새 회귀로 귀속하지 않는다. 승인된 SDK 버전으로 잠금 파일을 갱신한 뒤 새 폴더의 `npm ci`로 확인해야 한다. 이번에는 원본 잠금 파일을 바꾸지 않았다. **수정:** 선언된 peer 범위 그대로 `npm install --package-lock-only`로 잠금 파일을 다시 만들었다(storage/storage-domain `0.2.2-rc.5` 추가). 새 폴더 `npm ci` 통과. |
+
+기존 음성 지문 오분류, 에코 오감지, 종일 기록의 전력·발열·백그라운드 생존은 위 현재 사실의 미해결 항목을 유지한다. 작은 화면/큰 글꼴의 긴 한국어 버튼, TalkBack, 키보드와 저장 버튼 접근성, 다운로드 실패/재시도는 추가 실기기 검수 항목이며 이번에 확정한 결함으로 집계하지 않았다. HTTP 기록 동기화의 신뢰 네트워크 제약은 기존 동기화 계약에 따른 것으로 별도 신규 결함으로 중복 집계하지 않는다.
+
+## 완료 신호 이후 재검증 결과
+
+**총평: Android 빌드·정적 검사는 통과했지만 전체 품질 통과로 종료하지 않는다.** 아래 표는 `47fb0d2` 시점 기록이다. 이후 R01–R08(Mac 제외)과 R11 수정으로 DSH 잠금 기반 재설치는 통과하며, 실행할 Android 단위 테스트 부재와 실제 기기 미검증이 남아 있다.
+
+### 작업 인계와 기준선
+
+- 사용자 요청대로 최상위 `D:\rayneo_io\OpenRayneo\ok`를 약 60초 간격으로 확인했다. 처음에는 없었으며 `2026-11-19 02:06:54 +09:00` 수정 시각의 3바이트 파일(본문 `ok`) 생성을 확인한 뒤 검사를 시작했다. 신호 파일은 직접 생성/삭제/수정하지 않았다.
+- Claude 완료 후 `78bbfa7`(Android 전용 전환), `47fb0d2`(한국어화)를 확인했다. 검사 시작과 종료 시 HEAD는 동일하고 미추적 파일은 `ok`였다. 이전 Mac 검토를 현재 Android 검사에 섞지 않았다.
+- 작업 중 원본 코드/의존성/CI/서명 자료를 수정하지 않았다. 최종 변경은 기존 `ground_truth.md`, `README.md`, `docs/runbook.md`의 문서와 무시되는 익명 결과 JSON이다. 커밋, 배포, 기기 설치는 하지 않았다.
+
+### 환경과 실행 결과
+
+Windows에서 Node `24.22.1`, npm `11.19.1`, `uv`를 사용했다. Windows PATH에는 Java/Swift/ADB가 없었지만, 추가 조사로 WSL Ubuntu-24.04의 Temurin JDK `17.0.21+9`, Android SDK Platform 36/Build-Tools 36.0.0과 Windows WinGet의 ADB를 찾았다. WSL에서 D: 자동 마운트 경로를 사용할 수 없어 Git 기준 소스를 별도 Linux 폴더로 내보냈다.
+
+| 검사 | 결과 | 증거와 범위 |
+| --- | --- | --- |
+| `:app:assembleDebug`, `:app:assembleRelease` | 통과 | `arm64-v8a,x86_64`, Gradle 8.14. 첫 묶음 실행 3분 37초, 103개 태스크 실행. Kotlin/Java 컴파일과 APK 생성 완료. |
+| `:app:lintDebug`, `:app:lintRelease` | 통과, 경고 있음 | 각각 오류 0, 경고 24, 힌트 2. Release 전체 lint는 별도 실행하여 20초에 완료. 두 보고서가 같은 위치를 지적하므로 48개 독립 결함으로 합산하지 않는다. |
+| `:app:testDebugUnitTest`, `:app:testReleaseUnitTest` | `NO-SOURCE` | 영구 테스트 소스 없음, 실행 테스트 0건. 테스트 성공 건수로 세지 않는다. |
+| APK `apksigner verify --verbose` | 2개 통과 | Debug/Release 모두 v2 서명 유효. 이 검증용 로컬 키가 기존 배포 키와 같은지는 검증하지 않았으며 사용자 기기에 덮어 설치하지 않았다. |
+| APK ZIP/메타데이터/내용 | 2개 통과 | ZIP CRC 이상 없음. 패키지 `com.openrayneo.android`, 버전 `37 / 1.2.0-beta.4`, minSDK 33/targetSDK 36. 두 ABI의 ONNX/sherpa JNI 라이브러리와 campplus/silero-vad/GTCRN/segmentation 모델 4개 포함 확인. |
+| DSH JS 구문 | 4개 통과 | `api.js`, `harness.js`, `index.js`, `native-sessions.js`에 `node --check`. |
+| JSON 및 모드 일치 | 통과 | package/lock/두 voice-modes JSON 4개 파싱, Android와 DSH voice-modes 구조 동등 확인. |
+| DSH `npm ci` | `47fb0d2` 실패 → 수정 후 통과 | R11. 잠금 파일 재생성 후 새 폴더에서 22개 패키지 설치 성공. |
+| DSH 임시 의존성 설치/격리 모듈 검사 | 15/15 통과 | 복사본에 `npm install --package-lock=false --ignore-scripts --no-audit --no-fund`. SDK `0.2.2-rc.5`, schemastery `3.19.0`, zod `4.6.7`. 실제 서비스 대신 모의 세션 컨트롤러 사용. 잠금 파일 재현성·실제 DSH 대화 검증과 구별한다. |
+| DSH 배포 패키지 | 통과 | `npm pack --dry-run` 및 실제 `npm pack --ignore-scripts`, tgz 16,779바이트/9개 항목, 최상위 `package/`와 필요한 lib/manifest/설명 확인. 설치·게시하지 않았다. |
+| Python/XML/shell | 통과 | `uv run --no-project python`으로 `phone-codex.py` AST 1개와 Android XML 6개 파싱. Linux `sh -n`으로 모델 준비 스크립트와 gradlew 2개 검사. |
+| Git 변경 공백 검사 | 통과 | `git diff a914718..47fb0d2 --check`; 최종 문서 수정도 `git diff --check`로 확인. |
+| ADB/실기기/에뮬레이터 | 미실시 | ADB `devices -l`은 성공했으나 연결 기기 0대. WSL SDK에 emulator/system-images/AVD 없음. Bluetooth, 실제 UI, 오디오, LAN 동기화 실동작, 전력·백그라운드 검사는 하지 못했다. |
+| Mac/arch-grower | 제외/실행 불가 | Mac은 현재 브랜치에서 제거됨. arch-grower CLI는 로컬 스킬 경로에서 찾지 못해 focus/export-ui 미실행. graph/dashboard를 직접 읽거나 수정하지 않았다. |
+
+격리 모듈 검사 15건: 네이티브 scope 신원, backfill 제외, 비네이티브 제외, 신원 누락 제외, preset 분리, 신규 세션 생성/저장, 기존 세션 재사용, 일시 오류 시 신규 생성 방지, 없는 세션 재생성, 취소 시 생성 방지, 저장 메타데이터 스키마, LAN API 거부, HTTPS API 거부, API 오류의 일시성 분류, SDK와 플러그인 모듈 import. 검사는 stdin으로 실행하여 영구 테스트 파일을 추가하지 않았다.
+
+### lint와 빌드 주의 항목
+
+| 종류 | 변형별 개수 | 해석 |
+| --- | --- | --- |
+| UseKtx | 15 | SharedPreferences/URI 편의 API 사용 제안. 동작 실패로 확인된 것은 없음. |
+| GradleDependency / AndroidGradlePluginVersion | 3 / 1 | 도구·라이브러리 업데이트 제안. 검사 중 버전을 변경하지 않았다. |
+| ChromeOsAbiSupport | 1 | 기본 `arm64-v8a` 설정에 대한 지적. 이번 명령은 두 ABI를 지정했고 실제 두 APK에 x86_64가 들어 있음을 별도 확인했다. |
+| HardwareIds | 1 | `RayneoConnection.kt:334` 식별자 사용 검토 필요. |
+| DataExtractionRules | 1 | Manifest의 백업/기기 전송 규칙을 명시적으로 검토할 것. |
+| ObsoleteSdkInt / UnusedResources | 1 / 1 | 불필요한 v26 리소스 구분과 미사용 색상. |
+| AutoboxingStateCreation | 힌트 2 | Int/Float 전용 Compose 상태 사용 제안. |
+
+빌드 중 일부 네이티브 라이브러리의 심볼 제거를 하지 못해 원본 그대로 패키징했다는 경고와 Gradle 9 비호환 예정의 deprecated API 경고가 있었다. 현재 Gradle 8.14 빌드는 성공했으며 배포 크기/도구 업그레이드 검토에 남긴다.
+
+### 검사 중 장애와 복구 기록
+
+- 최초 Windows `gradlew.bat --version`은 Java 부재로 실패했다. WSL에 이미 설치된 JDK/SDK를 찾아 사용했으며 시스템 Java를 새로 설치하지 않았다.
+- 최초 소스 archive는 Windows 줄바꿈 설정으로 shell 스크립트가 CRLF가 되어 실행되지 않았고, WSL 명령 전달 중 PATH/변수 인용 문제도 있었다. `git -c core.autocrlf=false archive`로 기준 커밋을 다시 내보내고 고정 Linux PATH와 직접 인자를 사용하여 해결했다. 저장소의 원래 Git blob은 LF였으며 앱 소스 결함으로 분류하지 않았다. APK 서명 검사도 초기 인자 전달 실패 후 명시적 경로로 재실행해 통과했다.
+- 최초 `npm pack --dry-run`은 저장소 루트에서 실행하여 package.json 부재로 실패했다. 플러그인 폴더에서 다시 실행해 dry-run과 실제 pack 모두 통과했다.
+- `npm ci` 실패는 실제 잠금 파일 문제로 남겼다. 추가 모듈 검사를 위해서만 Temp 복사본에 잠금 파일을 쓰지 않는 설치를 수행했다. 원본 package/lock은 변경하지 않았다.
+- `.agents/skills/` 잔여 디렉터리에는 접근 거부가 있어 Git/파일 탐색 경고가 나왔다. 현재 Android 전용 HEAD에는 Mac API 스킬이 없으며, 권한 변경/강제 삭제 없이 검사했다.
+- 검증에 필요한 Gradle/모델/npm 의존성을 캐시에 내려받았고 ADB 조회가 로컬 ADB 서버를 시작했다. 사용자 모델·녹음·기기 설정을 열거나 바꾸지 않았다.
+
+### 결과와 산출물 보존
+
+- 익명 검사 지표와 경고 위치: [analysis/verification-47fb0d2/results.json](../analysis/verification-47fb0d2/results.json). Git 무시 대상이며 개발 PC의 재현 자료다. 경고 파일 경로는 저장소 상대 경로로 정리했고 자격 증명·오디오를 넣지 않았다.
+- WSL 검증 복사본: `/home/green/openrayneo-validation/47fb0d2/`. `verification-gradle.log`, `verification-lint-release.log`, `android/app/build/reports/lint-results-{debug,release}.{xml,html}`, `android/app/build/outputs/apk/{debug,release}/app-*.apk`를 보존했다.
+- Windows 임시 작업 폴더: `C:/Users/green/AppData/Local/Temp/openrayneo-verify-47fb0d2/`. LF 교정 전/후 소스 archive, DSH 의존성 검사 복사본(`dsh/`), 패키지 `openrayneo-dsh-0.1.8.tgz`가 있다. 캐시/임시 폴더 정리 시 없어질 수 있으며 현재 기준의 영구 결론은 이 문서에 남긴다.
+- 재현 명령과 환경은 [운영 가이드](../docs/runbook.md#개발-검증-명령)에 유지한다. 상주 테스트/CI를 새로 추가하거나 `ok`를 커밋하지 않았다.

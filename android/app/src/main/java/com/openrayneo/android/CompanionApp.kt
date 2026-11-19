@@ -50,10 +50,9 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
         else if (model.onboarding) model.step(model.onboardingStep - 1) else tab = 0
     }
     LaunchedEffect(model.notice) {
-        model.notice?.let {
-            model.notice = null
-            snackbars.showSnackbar(it)
-        }
+        val message = model.notice ?: return@LaunchedEffect
+        // Clear only after the snackbar ends; clearing first changed this effect's key and cancelled the snackbar.
+        try { snackbars.showSnackbar(message) } finally { if (model.notice == message) model.notice = null }
     }
     Scaffold(
         topBar = {
@@ -157,7 +156,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                 "voice-profiles" -> VoiceProfilesScreen(model)
                 "device-settings" -> GlassesSettingsScreen(model)
                 "content" -> CompanionContentScreen(model)
-                "teleprompter" -> TeleprompterScreen(model)
+                "teleprompter" -> pages.SaveableStateProvider("teleprompter") { TeleprompterScreen(model) }
                 "agent-api" -> AgentServerScreen(model, actions.bluetoothPermission)
                 else ->
                     if (model.onboarding)

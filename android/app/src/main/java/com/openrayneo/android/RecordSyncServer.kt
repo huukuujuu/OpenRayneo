@@ -13,11 +13,16 @@ import java.net.Socket
 import java.net.URLDecoder
 import java.security.SecureRandom
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 
 /** Encounter transport adapter. Device tools remain exclusively on the loopback Agent API. */
 internal class RecordSyncServer(private val settings: AppSettings, private val repository: ConversationRepository,
     private val audio: MeetingAudioStore, private val main: Handler, private val changed: () -> Unit) {
-    private val network = Executors.newFixedThreadPool(4)
+    // Accept runs on its own thread; each accepted socket needs a slot, so idle connections cannot pile up past the pool.
+    private val network = Executors.newFixedThreadPool(MAX_CLIENTS)
+    private val slots = Semaphore(MAX_CLIENTS)
+    private val deadlines = Executors.newSingleThreadScheduledExecutor()
     private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     @Volatile private var socket: ServerSocket? = null
     @Volatile private var token = ""
@@ -35,14 +40,17 @@ internal class RecordSyncServer(private val settings: AppSettings, private val r
         socket = server
         config.put("recordSyncToken", token).put("recordSyncEnabled", true); settings.save(config)
         state = AgentServerState(true, server.localPort, "컴퓨터 근거리 동기화 대기 중 · 오디오는 필요할 때만 전송"); changed()
-        network.execute {
+        Thread({
             try { while (!server.isClosed) {
-                val client = server.accept(); clients.add(client)
-                network.execute { try { handle(client) } finally { clients.remove(client); client.close() } }
+                val client = server.accept()
+                if (!slots.tryAcquire()) { client.close(); continue }
+                clients.add(client)
+                try { network.execute { try { handle(client) } catch (_: Exception) {} finally { clients.remove(client); client.close(); slots.release() } } }
+                catch (_: java.util.concurrent.RejectedExecutionException) { clients.remove(client); client.close(); slots.release() }
             } } catch (error: java.io.IOException) {
                 if (!server.isClosed) main.post { state = state.copy(notice = "동기화 엔드포인트 중단: ${error.message}"); changed() }
             }
-        }
+        }, "record-sync-accept").start()
     }
     fun stop() {
         closeSocket()
@@ -51,9 +59,11 @@ internal class RecordSyncServer(private val settings: AppSettings, private val r
     }
     fun rotate() { stop(); val config = settings.read(); config.remove("recordSyncToken"); settings.save(config); start() }
     private fun closeSocket() { socket?.close(); socket = null; clients.forEach { it.close() }; clients.clear(); token = "" }
-    fun close() { closeSocket(); network.shutdownNow() }
+    fun close() { closeSocket(); network.shutdownNow(); deadlines.shutdownNow() }
     private fun handle(client: Socket) {
         client.soTimeout = 10_000
+        // Whole-request deadline until the token is checked, so a slow unauthenticated sender cannot hold a slot.
+        val deadline = deadlines.schedule({ client.close() }, 20, TimeUnit.SECONDS)
         val output = client.getOutputStream()
         fun json(code: Int, data: JSONObject) {
             val bytes = data.toString().toByteArray()
@@ -73,6 +83,7 @@ internal class RecordSyncServer(private val settings: AppSettings, private val r
                 headers[row.substringBefore(':').lowercase()] = row.substringAfter(':').trim() }
             if (token.isEmpty() || headers["authorization"] != "Bearer $token") { json(401, JSONObject().put("error", "동기화 토큰이 유효하지 않음")); return }
             if (headers.containsKey("origin")) { json(403, JSONObject().put("error", "웹 페이지의 교차 출처 호출은 허용하지 않음")); return }
+            deadline.cancel(false)
             val path = request[1].substringBefore('?')
             if (request[0] == "POST" && path == "/v1/sync/exchange") {
                 require(!headers.containsKey("transfer-encoding"))
@@ -93,5 +104,7 @@ internal class RecordSyncServer(private val settings: AppSettings, private val r
                 audio.exportWav(record.audioId ?: record.id, record.audioSamples, output); output.flush()
             } else json(404, JSONObject().put("error", "해당 동기화 엔드포인트가 없음"))
         } catch (error: Exception) { if (!client.isClosed) runCatching { json(400, JSONObject().put("error", error.message ?: "동기화가 완료되지 않음")) } }
+        finally { deadline.cancel(false) }
     }
+    private companion object { const val MAX_CLIENTS = 4 }
 }

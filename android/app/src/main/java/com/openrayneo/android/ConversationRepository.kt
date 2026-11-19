@@ -21,8 +21,12 @@ internal class ConversationRepository(context: Context) {
     private val alias = "openrayneo.conversations"
     var people = read("people")?.optJSONArray("people")?.let { a -> List(a.length()) { VoicePerson.parse(a.getJSONObject(it)) } } ?: emptyList()
         private set
+    /** Record files that failed to decrypt or parse; they stay untouched on disk and are left out of the list. */
+    val unreadable = mutableListOf<String>()
     var records: List<ConversationRecord> = folder.listFiles().orEmpty().filter { it.name.startsWith("session-") && it.name.endsWith(".enc") }
-        .map { ConversationRecord.parse(checkNotNull(read(it.name.removeSuffix(".enc")))) }.sortedByDescending { it.createdAt }
+        .mapNotNull { file -> runCatching { ConversationRecord.parse(checkNotNull(read(file.name.removeSuffix(".enc")))) }
+            .onFailure { android.util.Log.w("OpenRayneo", "Unreadable record ${file.name}", it); unreadable += file.name }.getOrNull() }
+        .sortedByDescending { it.createdAt }
         private set
 
     private var sequence = (records.map { it.changeSequence } + people.map { it.changeSequence }).maxOrNull() ?: 0L

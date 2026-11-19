@@ -23,6 +23,42 @@ adb shell am start -n com.openrayneo.android/.MainActivity
 
 기본 Gradle 출력은 다음 빌드 때 새로 만들어진다. 고정 배포물은 `outputs/candidates/<버전>/`에 둔다. 덮어 설치를 위해 원래 개발 서명 `~/.android/debug.keystore`를 보관하며, 문서나 소스에 비밀번호를 쓰지 않는다. 시스템이 ADB 설치를 막으면 APK를 휴대폰 Download 폴더로 보낸 뒤 사용자가 직접 설치한다.
 
+## 개발 검증 명령
+
+검증 기준과 미해결 문제는 [재검증 결과](../.arch/ground_truth.md#완료-신호-이후-재검증-결과)를 본다. 빌드 성공, lint 경고, 테스트 소스 부재, 실제 기기 검수는 각각 기록한다. 테스트가 `NO-SOURCE`라면 실행 테스트 0건이다.
+
+Linux/WSL에서 JDK와 SDK를 지정하고 Android 폴더에서 실행한다. 아래 경로는 2026-11-19 검증 PC 기준이며 환경에 맞게 바꾼다.
+
+```sh
+export JAVA_HOME=/home/green/tools/jdk17
+export ANDROID_HOME=/home/green/android-sdk
+export PATH="$JAVA_HOME/bin:$PATH"
+./gradlew :app:assembleDebug :app:assembleRelease :app:lintDebug \
+  :app:testDebugUnitTest :app:testReleaseUnitTest \
+  -Popenrayneo.abis=arm64-v8a,x86_64 --console=plain
+./gradlew :app:lintRelease -Popenrayneo.abis=arm64-v8a,x86_64 --console=plain
+"$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
+"$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+```
+
+결과는 `app/build/reports/lint-results-{debug,release}.{html,xml}`과 `app/build/outputs/apk/`에서 확인한다. 검증용 키로 만든 APK를 기존 서명과 같은 것으로 가정해 설치하지 않는다.
+
+WSL에서 Windows 원본 드라이브가 보이지 않으면 원본을 옮기지 말고, 깨끗한 Git 기준 커밋을 `git -c core.autocrlf=false archive --format=tar --output=<archive.tar> <commit>`으로 내보내 별도 Linux 검증 폴더에서 푼다. 미커밋 코드가 있으면 archive에 빠지므로 검사 기준과 별도 반영 여부를 반드시 기록한다. 2026-11-19에는 `ok` 외 미커밋 코드가 없었고 검증 복사본은 `/home/green/openrayneo-validation/47fb0d2`였다.
+
+DSH는 `integrations/dsh-go`의 격리 복사본에서 실행한다.
+
+```sh
+node --check lib/api.js
+node --check lib/harness.js
+node --check lib/index.js
+node --check lib/native-sessions.js
+npm ci --ignore-scripts --no-audit --no-fund
+npm pack --dry-run --ignore-scripts
+npm pack --ignore-scripts --pack-destination <output-directory>
+```
+
+잠금 파일은 peer 범위를 바꾸지 않고 `npm install --package-lock-only --ignore-scripts`로 갱신하며, 합격 조건은 새 폴더의 `npm ci` 성공이다. 실제 DSH 호스트와 휴대폰 연동은 별도로 검수한다. 사용자 기기 검수 전에는 `adb devices -l`로 연결 상태를 확인한다.
+
 ## 연결과 복구
 
 1. 평소 전환할 때는 먼저 사용 중인 쪽에서 안경 연결을 끊고 기존 페어링은 유지한다. 휴대폰, 다른 기기, 공식 앱이 동시에 연결을 다투면 데이터 통로가 막힌다.

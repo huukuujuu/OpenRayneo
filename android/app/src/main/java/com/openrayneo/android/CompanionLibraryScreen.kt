@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -75,10 +76,23 @@ internal fun AgentServerScreen(model: AppModel, requestBluetoothPermission: () -
 @Composable
 internal fun TeleprompterScreen(model: AppModel) {
     val state = model.state.teleprompter
-    var selected by remember { mutableStateOf<String?>(null) }
-    var title by remember { mutableStateOf("") }
-    var text by remember { mutableStateOf("") }
-    var speed by remember { mutableIntStateOf(2) }
+    // Saveable so the draft survives rotation and leaving the screen; the saved copy tells whether edits would be lost.
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    var title by rememberSaveable { mutableStateOf("") }
+    var text by rememberSaveable { mutableStateOf("") }
+    var savedTitle by rememberSaveable { mutableStateOf("") }
+    var savedText by rememberSaveable { mutableStateOf("") }
+    var speed by rememberSaveable { mutableIntStateOf(2) }
+    var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
+    fun load(id: String?, newTitle: String, newText: String) { selected = id; title = newTitle; text = newText; savedTitle = newTitle; savedText = newText }
+    fun switchTo(id: String?, newTitle: String, newText: String) =
+        if (title != savedTitle || text != savedText) pending = { load(id, newTitle, newText) } else load(id, newTitle, newText)
+    pending?.let { discard ->
+        AlertDialog(onDismissRequest = { pending = null }, title = { Text("저장하지 않은 원고") },
+            text = { Text("지금 원고의 변경 내용을 저장하지 않았습니다. 버리고 넘어갈까요?") },
+            confirmButton = { TextButton(onClick = { pending = null; discard() }) { Text("버리기") } },
+            dismissButton = { TextButton(onClick = { pending = null }) { Text("계속 편집") } })
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("프롬프터 원고함", style = MaterialTheme.typography.headlineSmall)
         Note("원고는 휴대폰에 저장되며 공식 클라우드를 사용하지 않습니다. 전송 시 현재 표시와 음성 수신을 중지한 뒤 안경으로 전송합니다.")
@@ -89,15 +103,15 @@ internal fun TeleprompterScreen(model: AppModel) {
             TextButton(onClick = { model.attempt { model.service().teleprompter.control("stop") {} } }, enabled = !state.busy) { Text("프롬프터 중지") }
         }
         state.documents.forEach { document ->
-            TextButton(onClick = { selected = document.getString("did"); title = document.getString("title"); text = document.getString("text") }) { Text(document.getString("title")) }
+            TextButton(onClick = { switchTo(document.getString("did"), document.getString("title"), document.getString("text")) }) { Text(document.getString("title")) }
         }
         OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("원고 제목") })
         OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), label = { Text("본문") }, minLines = 6, maxLines = 16)
         Text("스크롤 속도 $speed")
         Slider(speed.toFloat(), { speed = it.toInt() }, valueRange = 1f..10f, steps = 8)
-        ToolOutlinedButton(onClick = { model.attempt { selected = model.service().teleprompter.save(title.trim(), text, selected ?: java.util.UUID.randomUUID().toString()); model.notice = "원고가 휴대폰에 저장됨" } }, enabled = title.isNotBlank() && text.isNotBlank() && !state.busy) { Text("원고 저장") }
+        ToolOutlinedButton(onClick = { model.attempt { selected = model.service().teleprompter.save(title.trim(), text, selected ?: java.util.UUID.randomUUID().toString()); savedTitle = title; savedText = text; model.notice = "원고가 휴대폰에 저장됨" } }, enabled = title.isNotBlank() && text.isNotBlank() && !state.busy) { Text("원고 저장") }
         ToolButton(onClick = { model.attempt { model.service().startTeleprompter(title.trim(), text, speed, selected) {} } },
             enabled = title.isNotBlank() && text.isNotBlank() && !state.busy && model.state.glasses.link.phase == LinkPhase.FULL) { Text("저장 후 안경에서 재생") }
-        TextButton(onClick = { selected = null; title = ""; text = "" }) { Text("새 원고") }
+        TextButton(onClick = { switchTo(null, "", "") }) { Text("새 원고") }
     }
 }
