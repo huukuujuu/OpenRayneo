@@ -9,14 +9,40 @@ import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
+/**
+ * What the recognized text is for. The sentence end is when the text goes to the LLM, so each use has its own model
+ * and, for the streaming model, its own silence that ends a sentence.
+ */
+internal enum class AsrUse(val sentenceSilenceMs: Int) {
+    /** Hey RayNeo: one spoken question; the short-input model refines the whole utterance before it ends. */
+    WAKE(0),
+    /** Live captions, translation, Live answers and the realtime hint: hand each sentence over quickly. */
+    LIVE(700),
+    /** Always-on, meetings and other records: tolerate pauses while thinking. */
+    RECORD(1200),
+}
+
+internal object AsrModels {
+    const val SHORT = "qwen-audio-3.1-asr-flash-message"
+    const val STREAMING = "qwen-audio-3.1-asr-flash-streaming"
+    /** The service refused the default streaming model before starting (e.g. not offered on this endpoint): use SHORT until restart. */
+    @Volatile var streamingRefused = false
+    fun model(config: JSONObject, use: AsrUse): String = if (use == AsrUse.WAKE) config.optString("asrModelWake").trim().ifEmpty { SHORT }
+        else config.optString("asrModelLive").trim().ifEmpty { if (streamingRefused) SHORT else STREAMING }
+    fun isDefaultStreaming(config: JSONObject, use: AsrUse) = use != AsrUse.WAKE && config.optString("asrModelLive").isBlank()
+}
+
 /** Existing Bailian run-task protocol; timestamps remain on the uncut 16kHz PCM timeline. */
-internal class ConversationASR(config: JSONObject,
+internal class ConversationASR(config: JSONObject, private val use: AsrUse,
     private val sentence: (String, Long, Long, String, List<SpeechWord>) -> Unit,
     private val failed: (String) -> Unit, private val completed: () -> Unit,
     /** When set, the service also streams unfinished sentences (live captions); records keep using finals only. */
     private val interim: ((String) -> Unit)? = null) : WebSocketListener(), SpeechRound {
     private val task = UUID.randomUUID().toString()
-    private val model = config.optString("asrModel").ifBlank { "qwen-audio-3.1-asr-flash-message" }
+    private val model = AsrModels.model(config, use)
+    private val defaultStreaming = AsrModels.isDefaultStreaming(config, use) && model == AsrModels.STREAMING
+    // The streaming model documents its own parameters; the short-input ones are not sent to it.
+    private val streaming = "streaming" in model || "realtime" in model
     private val key = config.optString("asrKey").trim()
     private val address = config.optString("asrUrl").ifBlank { AppSettings.DEFAULT_ASR_URL }
     // Comma-separated ISO codes (e.g. "ko,en"); blank keeps the service's automatic language detection.
@@ -46,10 +72,13 @@ internal class ConversationASR(config: JSONObject,
     @Synchronized override fun finish() { if (!ended) { finishing = true; pump() } }
     @Synchronized override fun cancel() { if (!ended) { ended = true; pending.clear(); socket?.cancel(); release() } }
     override fun onOpen(webSocket: WebSocket, response: Response) {
+        // The near-field VAD fits a mic on the wearer's face.
         val parameters = JSONObject().put("format", "pcm").put("sample_rate", 16000)
-            // Live partials, filler/repetition cleanup, and the near-field VAD that fits a mic on the wearer's face.
-            .put("intermediate_result_enabled", true).put("disfluency_removal_enabled", true)
             .put("heartbeat", true).put("vad_model", "near_meeting_16k")
+        // Streaming always sends partials; its sentence end follows the silence chosen for this use.
+        if (streaming) { if (use.sentenceSilenceMs > 0) parameters.put("max_sentence_silence", use.sentenceSilenceMs) }
+        // Short input: live partials and filler/repetition cleanup are opt-in.
+        else parameters.put("intermediate_result_enabled", true).put("disfluency_removal_enabled", true)
         if (languages.isNotEmpty()) parameters.put("language_hints", org.json.JSONArray(languages))
         webSocket.send(JSONObject().put("header", header("run-task")).put("payload", JSONObject()
             .put("task_group", "audio").put("task", "asr").put("function", "recognition")
@@ -78,7 +107,15 @@ internal class ConversationASR(config: JSONObject,
                 }
             }
             "task-finished" -> { ended = true; socket?.close(1000, null); release(); completed() }
-            "task-failed" -> fail("ASR 요청 실패: " + header.optString("error_code", "unknown"))
+            "task-failed" -> {
+                val code = header.optString("error_code", "unknown")
+                // Only a refusal of the model or its parameters; key, balance or throttling errors would hit the other model too.
+                val refused = !started && defaultStreaming && Regex("model|param|unsupported|notfound|not_found", RegexOption.IGNORE_CASE).containsMatchIn(code)
+                if (refused) AsrModels.streamingRefused = true
+                fail("ASR 요청 실패($model): " + code +
+                    header.optString("error_message").takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty() +
+                    if (refused) " · 앱을 다시 시작할 때까지 ${AsrModels.SHORT} 사용" else "")
+            }
         }
         } catch (error: Exception) { fail("ASR 응답 처리 실패: ${error.message}") }
     }

@@ -19,7 +19,7 @@ import org.json.JSONObject
 @Composable
 internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
     val drafts = model.formDrafts
-    val voiceKeys = listOf("asrEngine", "asrKey", "asrUrl", "asrModel", "asrLanguage", "nativeAutoAnswer", "audioChannel", "speakerThreshold", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "answerMaxChars", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded")
+    val voiceKeys = listOf("asrEngine", "asrKey", "asrUrl", "asrModelWake", "asrModelLive", "asrLanguage", "nativeAutoAnswer", "audioChannel", "speakerThreshold", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "answerMaxChars", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded")
     var error by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("음성 및 기억 설정", style = MaterialTheme.typography.headlineSmall)
@@ -71,7 +71,8 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
         SectionLabel("Bailian ASR")
         VoiceField(model, "asrKey", "API Key", secret = true)
         VoiceField(model, "asrUrl", "WSS 주소 (비우면 Bailian 국제 기본값)", AppSettings.DEFAULT_ASR_URL)
-        VoiceField(model, "asrModel", "모델", "qwen-audio-3.1-asr-flash-message")
+        VoiceField(model, "asrModelWake", "깨우기 모델 (질문 하나를 통째로 다듬음)", AsrModels.SHORT)
+        VoiceField(model, "asrModelLive", "계속 듣기 모델 (자막·번역·실시간 답변·기록)", AsrModels.STREAMING)
         val asrLanguages = drafts["asrLanguage"].orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         fun toggleLanguage(code: String, on: Boolean) {
             val chosen = if (on) asrLanguages + code else asrLanguages - code

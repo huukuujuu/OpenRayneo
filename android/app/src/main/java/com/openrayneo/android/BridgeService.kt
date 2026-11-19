@@ -809,13 +809,13 @@ internal class BridgeService : Service() {
                 result.onFailure { onLog("ASR 단독 시험: 시험 음성 만들기 실패 ${it.message}") }.onSuccess { pcm ->
                     asrTesting = true
                     val translation = JSONObject(SpeechRounds.bilingual(this, base).toString()).put("asrLanguage", "ko,en")
-                    runAsrTest("기록·깨우기용 설정", base, pcm) { runAsrTest("번역용 설정(ko,en)", translation, pcm) { asrTesting = false } }
+                    runAsrTest("깨우기 설정", base, pcm, AsrUse.WAKE) { runAsrTest("번역·실시간 설정(ko,en)", translation, pcm, AsrUse.LIVE) { asrTesting = false } }
                 }
             }
         }
         onLog("ASR 단독 시험 시작: 엔진 $engine, 언어 힌트 \"${base.optString("asrLanguage")}\"")
     }
-    private fun runAsrTest(label: String, config: JSONObject, pcm: ShortArray, next: () -> Unit) {
+    private fun runAsrTest(label: String, config: JSONObject, pcm: ShortArray, use: AsrUse, next: () -> Unit) {
         val texts = mutableListOf<String>()
         val done = java.util.concurrent.atomic.AtomicBoolean(false)
         var round: SpeechRound? = null
@@ -824,7 +824,7 @@ internal class BridgeService : Service() {
         round = runCatching {
             SpeechRounds.create(this, config, { text, _, _, _, _ -> main.post { texts += text } },
                 { message -> main.post { end("실패 - $message") } },
-                { main.post { end(if (texts.isEmpty()) "끝났지만 인식 결과 없음" else "성공 - ${texts.joinToString(" / ")}") } })
+                { main.post { end(if (texts.isEmpty()) "끝났지만 인식 결과 없음" else "성공 - ${texts.joinToString(" / ")}") } }, use = use)
         }.getOrElse { end("만들기 실패 - ${it.message}"); return }
         val active = checkNotNull(round)
         Thread {

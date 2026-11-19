@@ -259,7 +259,11 @@ internal class ConversationController(private val context: Context, private val 
         } }, if (state.source != ConversationSource.NATIVE || wake == null) null else { text -> worker.post {
             // Live partial for the native assistant page; the final sentence still goes through drainSentences.
             if (token == generation && epoch == asrEpoch && state.running) partial?.invoke(text, wake)
-        } })
+        } }, use = when (state.source) {
+            ConversationSource.NATIVE -> AsrUse.WAKE
+            ConversationSource.REALTIME -> AsrUse.LIVE
+            else -> AsrUse.RECORD
+        })
         rounds[round] = info; activeASR[channel] = round; round.start()
     }
     private fun commitCursor(channel: Int, frames: Long) {

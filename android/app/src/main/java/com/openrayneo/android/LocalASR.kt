@@ -52,12 +52,12 @@ internal object SpeechRounds {
     fun missing(config: JSONObject) = model(config)?.let { "먼저 음성 설정에서 기기 ASR 모델(${it.title})을 내려받으세요" } ?: "먼저 음성 설정에서 Bailian ASR API Key를 입력하세요"
     fun create(context: Context, config: JSONObject,
                sentence: (String, Long, Long, String, List<SpeechWord>) -> Unit,
-               failed: (String) -> Unit, completed: () -> Unit, interim: ((String) -> Unit)? = null): SpeechRound =
+               failed: (String) -> Unit, completed: () -> Unit, interim: ((String) -> Unit)? = null, use: AsrUse = AsrUse.LIVE): SpeechRound =
         when (config.optString("asrEngine")) {
             "local" -> LocalASR(context, config, sentence, failed, completed, interim)
             "stream" -> StreamASR(context, LocalModels.zipformer, null, sentence, failed, completed, interim)
             "nemotron" -> StreamASR(context, LocalModels.nemotron, nemotronLanguage(config), sentence, failed, completed, interim)
-            else -> ConversationASR(config, sentence, failed, completed, interim)
+            else -> ConversationASR(config, use, sentence, failed, completed, interim)
         }
 }
 
