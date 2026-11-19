@@ -34,6 +34,10 @@ internal class GlassesDisplay(
     private var pending: PageContent? = null
     private var lastWritten: PageContent? = null
     private val recentAudioSequences = ArrayDeque<Long>()
+    // CAPTION: every finished sentence goes out once as a final (status 1); only the latest partial (status 0) may be skipped.
+    private val finals = ArrayDeque<String>()
+    private var lastFinal = ""
+    private var lastPartial = ""
     private var audioReported = false
     private var unmatchedAudioReported = false
     private val timeout = Runnable { fail("안경이 시작 또는 레이아웃을 확인하지 않았습니다. 다시 시도하세요") }
@@ -44,6 +48,7 @@ internal class GlassesDisplay(
         reset()
         validate(next.mode, next.content)
         session = next
+        next.offer?.let { stage(next.mode, next.content); adopt(next, it); return }
         val id = UUID.randomUUID().toString().replace("-", "")
         sid = id; pending = next.content
         val body = JSONObject().put("sid", id).put("trigger", 1).put("force", false).put("code", 0)
@@ -54,12 +59,45 @@ internal class GlassesDisplay(
         send(protocol(next.mode), 1, body) { if (sid == id && it.isFailure) fail("표시 시작 전송 실패") }
     }
 
+    /** The glasses opened this session: answer their start request with their sid instead of opening our own. */
+    private fun adopt(next: PageSession, offer: GlassesOffer) {
+        val id = offer.sid
+        sid = id
+        val settings = offer.settings?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject()
+        val starting = generation
+        send(offer.protocol, 2, JSONObject().put("sid", id).put("code", 1).put("final_settings", settings)) { result ->
+            if (sid != id || generation != starting) return@send
+            if (result.isFailure) { fail("안경이 연 세션에 시작 결과를 보내지 못함"); return@send }
+            report("안경이 연 세션을 이어받음: 0x${offer.protocol.toString(16)} sid=${id.take(8)}")
+            audioAccepted = true
+            signal(next.id, PageSignal.AudioAccepted(next.mode.channels))
+            if (generation != starting) return@send
+            accepted = true
+            signal(next.id, PageSignal.Settling)
+            if (generation != starting) return@send
+            schedule(settle, 500)
+        }
+    }
+
+    /** Refuse a glasses start request we will not serve, so the glasses do not wait for it. */
+    fun decline(protocol: Int, id: String) {
+        closedSids.addLast(id); while (closedSids.size > 8) closedSids.pollFirst()
+        send(protocol, 3, JSONObject().put("sid", id).put("reason_code", if (protocol == 0x13) 10 else 2).put("text", "")) {}
+    }
+
     fun update(id: Long, content: PageContent) {
         val active = session ?: return
         if (active.id != id || failed) return
         validate(active.mode, content)
-        pending = content
+        stage(active.mode, content)
         flush()
+    }
+
+    private fun stage(mode: PageMode, content: PageContent) {
+        if (mode == PageMode.CAPTION && content.text.isNotBlank() && content.text != lastFinal) {
+            finals.addLast(content.text); lastFinal = content.text; lastPartial = ""
+        }
+        pending = content
     }
 
     fun receive(frame: ProtocolCodec.Frame, source: String) {
@@ -128,7 +166,7 @@ internal class GlassesDisplay(
             cancel(timeout)
             if (json.optInt("code") != 1) { fail("안경이 세션 시작을 거부함: ${json.optInt("code")}"); return }
             audioAccepted = true
-            signal(active.id, PageSignal.AudioAccepted(if (active.mode == PageMode.NAVIGATION) 1 else 2))
+            signal(active.id, PageSignal.AudioAccepted(active.mode.channels))
             if (generation != receivingGeneration) return
             if (active.mode == PageMode.NAVIGATION) {
                 signal(active.id, PageSignal.LayoutPending)
@@ -163,6 +201,7 @@ internal class GlassesDisplay(
         val content = pending ?: return
         val id = sid ?: return
         val active = session ?: return
+        if (active.mode == PageMode.CAPTION) { flushCaption(active, id, content); return }
         pending = null
         if (content == lastWritten) return
         writing = true
@@ -182,13 +221,31 @@ internal class GlassesDisplay(
         }
     }
 
+    /** The glasses' caption screen draws its own lines: a partial (status 0) replaces the last partial, a final (1) stays. */
+    private fun flushCaption(active: PageSession, id: String, content: PageContent) {
+        val partial = content.answer.orEmpty()
+        val (status, text) = when {
+            finals.isNotEmpty() -> 1 to finals.removeFirst()
+            partial.isNotBlank() && partial != lastPartial -> 0 to partial
+            else -> { pending = null; lastWritten = content; signal(active.id, PageSignal.Written(content)); return }
+        }
+        if (status == 0) lastPartial = text
+        writing = true
+        send(0x13, 5, JSONObject().put("sid", id).put("mode", 3).put("status", status)
+            .put("content", JSONObject().put("source_transcript", text))) { result ->
+            if (sid != id) return@send
+            writing = false
+            if (result.isSuccess) flush() else fail("자막 전송 실패: ${result.exceptionOrNull()?.message}")
+        }
+    }
+
     fun stop(token: Long) {
         val active = session; val id = sid
         if (active == null || active.id != token || id == null) { signal(token, PageSignal.Closed()); return }
         reset()
         val closingGeneration = generation
         send(protocol(active.mode), 3, JSONObject().put("sid", id)
-            .put("reason_code", if (active.mode == PageMode.NAVIGATION) 10 else 2).put("text", "")) { result ->
+            .put("reason_code", if (active.mode == PageMode.PROMPT) 2 else 10).put("text", "")) { result ->
             if (generation == closingGeneration) signal(token, PageSignal.Closed(result.exceptionOrNull()?.let { "닫기 명령 전송 실패: ${it.message}" }))
         }
     }
@@ -203,10 +260,10 @@ internal class GlassesDisplay(
         cancel(timeout); cancel(settle)
         sid?.let { closedSids.addLast(it); while (closedSids.size > 8) closedSids.pollFirst() }
         session = null; sid = null; audioAccepted = false; accepted = false; settled = false; writing = false; failed = false
-        navigationFrameSent = false; pending = null; lastWritten = null
+        navigationFrameSent = false; pending = null; lastWritten = null; finals.clear(); lastFinal = ""; lastPartial = ""
         recentAudioSequences.clear(); audioReported = false; unmatchedAudioReported = false
     }
-    private fun protocol(mode: PageMode) = if (mode == PageMode.NAVIGATION) 0x13 else 0x17
+    private fun protocol(mode: PageMode) = mode.protocol
     private fun validate(mode: PageMode, content: PageContent) {
         if (mode == PageMode.NAVIGATION) require(NavigationFrame.isGrid(content.text)) { "내비게이션 화면은 20열 × 5행을 유지해야 함" }
     }

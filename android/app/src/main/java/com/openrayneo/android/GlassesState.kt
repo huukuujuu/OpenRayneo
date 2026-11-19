@@ -17,12 +17,18 @@ internal sealed interface DisplayIntent {
 internal enum class DisplayOwnership { APP, YIELDED }
 internal enum class LinkPhase { DISCONNECTED, SCANNING, CONNECTING, BLE_ONLY, FULL, RETRY_WAIT, CLOSING }
 internal data class LinkState(val phase: LinkPhase = LinkPhase.DISCONNECTED, val detail: String = "안경 연결 대기 중")
-internal enum class PageMode { NAVIGATION, PROMPT }
+/** NAVIGATION and CAPTION use the caption business 0x13 (text mode 3), PROMPT the prompt business 0x17 (text mode 4). */
+internal enum class PageMode { NAVIGATION, PROMPT, CAPTION }
+internal val PageMode.protocol: Int get() = if (this == PageMode.PROMPT) 0x17 else 0x13
+internal val PageMode.channels: Int get() = if (this == PageMode.PROMPT) 2 else 1
+/** A session the glasses opened themselves (their menu sent type 1 with their own sid); the phone answers it with type 2. */
+internal data class GlassesOffer(val mode: PageMode, val sid: String, val settings: String?) { val protocol get() = mode.protocol }
 internal enum class PagePhase { STARTING, LAYOUT, SETTLING, READY, CLOSING }
 internal data class PageContent(val key: String, val text: String, val answer: String? = null)
 internal data class PageSession(
     val id: Long, val mode: PageMode, val phase: PagePhase, val content: PageContent,
     val writtenContent: PageContent? = null,
+    val offer: GlassesOffer? = null,
 )
 internal data class TranslationView(val source: String = "", val target: String = "")
 internal data class NavigationState(val enabled: Boolean = false, val key: String? = null, val frame: String? = null)
@@ -40,6 +46,10 @@ internal data class GlassesState(
     val translation: TranslationView = TranslationView(),
     /** The translation window currently shows live captions instead of a translation. */
     val captions: Boolean = false,
+    /** The captions run in the glasses' own caption screen (opened from their menu) instead of the app's prompt window. */
+    val glassesCaptions: Boolean = false,
+    /** Start request from the glasses menu waiting for the matching page to open. */
+    val offer: GlassesOffer? = null,
     /** Live caption on the realtime-hint standby page: last heard sentence and a status line. */
     val standby: TranslationView = TranslationView(),
     val revision: Long = 0,
@@ -63,6 +73,7 @@ internal data class GlassesState(
         session.phase == PagePhase.SETTLING -> "페이지 확인됨, 내용 전송 중"
         session.writtenContent != session.content -> "안경 내용 업데이트 중"
         session.mode == PageMode.NAVIGATION -> "내비게이션 세션 준비됨"
+        session.mode == PageMode.CAPTION -> "안경 실시간 자막 세션 준비됨"
         intent == DisplayIntent.BlankPrompt -> "화면을 지웠고 음성 수신은 유지됨"
         intent is DisplayIntent.Answer -> "답변 세션 준비됨"
         intent == DisplayIntent.Translation -> if (captions) "실시간 자막 세션 준비됨" else "실시간 번역 세션 준비됨"
@@ -87,7 +98,10 @@ internal sealed interface GlassesEvent {
     data object PauseDisplay : GlassesEvent
     data object OpenStandby : GlassesEvent
     /** [captions] = live captions (speech only, no translation) on the same window. */
-    data class StartTranslation(val captions: Boolean = false) : GlassesEvent
+    data class StartTranslation(val captions: Boolean = false, val glassesPage: Boolean = false) : GlassesEvent
+    data class GlassesOffered(val offer: GlassesOffer) : GlassesEvent
+    /** Forget the pending glasses start request ([sid] null = any); [decline] = tell the glasses we will not serve it. */
+    data class ClearOffer(val sid: String?, val decline: Boolean) : GlassesEvent
     data class TranslationText(val view: TranslationView) : GlassesEvent
     data class StandbyText(val view: TranslationView) : GlassesEvent
     data object ClearDisplay : GlassesEvent
@@ -119,5 +133,6 @@ internal sealed interface GlassesEffect {
     data class ScheduleCloseTimeout(val id: Long) : GlassesEffect
     data object CancelCloseTimeout : GlassesEffect
     data object DisconnectTransport : GlassesEffect
+    data class DeclineOffer(val offer: GlassesOffer) : GlassesEffect
 }
 internal data class GlassesTransition(val state: GlassesState, val effects: List<GlassesEffect>)

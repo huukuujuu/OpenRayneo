@@ -35,6 +35,8 @@ internal class LiveTranslator(
     @Volatile var active = false; private set
     @Volatile var status = OFF; private set
     @Volatile var captions = false; private set
+    /** Captions for the glasses' own caption screen: send whole lines, the glasses wrap and scroll them. */
+    private var fullLines = false
 
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
@@ -67,11 +69,12 @@ internal class LiveTranslator(
     }
 
     /** Must be called on the main thread. */
-    fun start(settings: JSONObject, captions: Boolean = false) {
+    fun start(settings: JSONObject, captions: Boolean = false, fullLines: Boolean = false) {
         validate(settings, captions)
         stop()
         synchronized(this) {
             this.captions = captions
+            this.fullLines = captions && fullLines
             config = if (captions) JSONObject(settings.toString())
                 else JSONObject(SpeechRounds.bilingual(context, settings).toString()).put("asrLanguage", "ko,en")
             generation++
@@ -157,7 +160,8 @@ internal class LiveTranslator(
     }
 
     private fun listening() = if (captions) CAPTIONS_LISTENING else LISTENING
-    private fun render() = show(clip(sourceLine, SOURCE_LIMIT), if (captions) clip(targetLine, TARGET_LIMIT) else targetLine)
+    private fun render() = if (fullLines) show(sourceLine.trim(), targetLine.trim())
+        else show(clip(sourceLine, SOURCE_LIMIT), if (captions) clip(targetLine, TARGET_LIMIT) else targetLine)
 
     private fun interim(token: Int, text: String) {
         if (token != generation || !active || misheard(text)) return

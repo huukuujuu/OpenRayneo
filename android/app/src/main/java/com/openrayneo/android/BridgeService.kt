@@ -153,7 +153,12 @@ internal class BridgeService : Service() {
             { id, signal -> dispatch(GlassesEvent.SessionSignal(id, signal)) },
             { id, packet -> if (audioOwner == id && state.session?.id == id) audio.accept(packet) },
             { dispatch(GlassesEvent.ExternalPage(it)) },
-            { protocol, type, _ -> if (protocol == 0x13 && type == 1) main.post(::glassesCaptionRequest) })
+            { protocol, type, body ->
+                val sid = body?.optString("sid").orEmpty()
+                if (type == 1 && sid.isNotBlank()) main.post { glassesStartRequest(protocol, sid, body?.optJSONObject("settings")?.toString()) }
+                // The glasses gave up on a request we have not answered yet.
+                if (type == 3 && sid.isNotBlank()) main.post { if (state.offer?.sid == sid) { dispatch(GlassesEvent.ClearOffer(sid, decline = false)); onLog("안경이 시작 요청을 취소함") } }
+            })
         navigation.initialize(this)
         navigation.stop()
         navigation.observers.add(navigationObserver)
@@ -202,6 +207,7 @@ internal class BridgeService : Service() {
                 if (previous.link.phase == LinkPhase.FULL && state.link.phase != LinkPhase.FULL) {
                     conversations.stop(); voiceTransport.disconnected(); voiceAudio.stop()
                     requests.disconnected(); deviceSettings.disconnected(); content.disconnected(); teleprompter.disconnected()
+                    if (state.offer != null) events.add(GlassesEvent.ClearOffer(null, decline = false))
                 }
                 if (previous.link.phase != LinkPhase.FULL && state.link.phase == LinkPhase.FULL) { content.connected(); teleprompter.connected(); runCatching { deviceSettings.refresh() } }
                 if (previous.session != null && state.session == null && previous.session.mode == PageMode.PROMPT && conversations.state.running && conversations.state.source == ConversationSource.REALTIME && conversationOwnsDisplay &&
@@ -260,6 +266,7 @@ internal class BridgeService : Service() {
             }
             GlassesEffect.CancelCloseTimeout -> { closeTask?.let(main::removeCallbacks); closeTask = null }
             GlassesEffect.DisconnectTransport -> supervisor.disconnect()
+            is GlassesEffect.DeclineOffer -> { display.decline(effect.offer.protocol, effect.offer.sid); onLog("응답하지 않은 안경 시작 요청을 종료함") }
         }
     }
 
@@ -418,31 +425,51 @@ internal class BridgeService : Service() {
         } else if (state.link.phase == LinkPhase.FULL && !state.disconnecting) connection.sendNotification("어시스턴트", answer)
     }
     fun pausePrompt() { conversations.stop(); dispatch(GlassesEvent.PauseDisplay) }
-    fun startTranslation(captions: Boolean = false) {
+    fun startTranslation(captions: Boolean = false, glassesPage: Boolean = false) {
         check(state.link.phase == LinkPhase.FULL && !state.disconnecting) { "먼저 안경을 완전히 연결하세요" }
         val config = settings.read()
         translator.validate(config, captions)
         conversationOwnsDisplay = false
         if (conversations.state.running) conversations.stop()
-        translator.start(config, captions)
-        dispatch(GlassesEvent.StartTranslation(captions))
+        translator.start(config, captions, fullLines = glassesPage)
+        dispatch(GlassesEvent.StartTranslation(captions, glassesPage))
     }
     /** Live captions: the glasses' own caption feature needs the phone to recognise speech, so the app runs it here. */
     fun startCaptions() = startTranslation(captions = true)
-    /** The glasses menu asked for Live captions (caption start request outside any app session). */
-    private fun glassesCaptionRequest() {
-        if (translator.active && translator.captions) return
-        // The meaning of this frame is not confirmed on a device yet: never let it end something the user started.
+    private var lastGlassesStart: String? = null
+    /**
+     * The glasses menu opened Live captions (0x13) or Live answers (0x17) and sent its own start request (type 1 with its sid).
+     * Official app 1.0.25: the phone answers with type 2 on that sid; a request it will not serve is closed with type 3.
+     */
+    private fun glassesStartRequest(protocol: Int, sid: String, settings: String?) {
+        if (protocol != 0x13 && protocol != 0x17 || sid == lastGlassesStart) return
+        lastGlassesStart = sid
+        val feature = if (protocol == 0x13) "실시간 자막" else "실시간 답변"
+        // Never end something the user started for a request from the glasses menu.
         val busy = when {
             conversations.state.running -> "기록(${conversations.state.source.title}) 실행 중"
-            translator.active -> "실시간 번역 실행 중"
+            translator.active -> if (translator.captions) "앱 실시간 자막 실행 중" else "실시간 번역 실행 중"
             state.intent != DisplayIntent.Idle && state.intent != DisplayIntent.PromptStandby -> "다른 안경 화면 표시 중"
             else -> null
         }
-        if (busy != null) { onLog("안경의 실시간 자막 요청을 받았지만 $busy 이라 시작하지 않음"); return }
-        runCatching { startCaptions() }
-            .onSuccess { onLog("안경 메뉴의 실시간 자막 요청 → 앱 실시간 자막 시작") }
-            .onFailure { onLog("안경의 실시간 자막 요청을 처리하지 못함: ${it.message}") }
+        val error = busy ?: runCatching {
+            // Check what can still refuse before touching the user's page.
+            check(state.link.phase == LinkPhase.FULL && !state.disconnecting) { "안경 연결이 완전하지 않음" }
+            if (protocol == 0x13) translator.validate(this.settings.read(), captions = true)
+            // Our idle/standby page would keep the business busy and the request unanswered: close it so the new page answers it.
+            if (state.session != null) dispatch(GlassesEvent.PauseDisplay)
+            dispatch(GlassesEvent.GlassesOffered(GlassesOffer(if (protocol == 0x13) PageMode.CAPTION else PageMode.PROMPT, sid, settings)))
+            if (protocol == 0x13) startTranslation(captions = true, glassesPage = true) else startRealtimeHint()
+        }.exceptionOrNull()?.let { it.message ?: "시작 실패" }
+        if (error == null) {
+            onLog("안경 메뉴의 $feature 요청 → 안경 화면에서 시작")
+            // Realtime hint opens its page only after its worker starts; a request still unanswered by then is refused.
+            main.postDelayed({ if (state.offer?.sid == sid) { dispatch(GlassesEvent.ClearOffer(sid, decline = true)); onLog("안경 메뉴의 $feature 요청에 제때 답하지 못해 종료함") } }, 8_000)
+            return
+        }
+        if (state.offer?.sid == sid) dispatch(GlassesEvent.ClearOffer(sid, decline = false))
+        display.decline(protocol, sid)
+        onLog("안경 메뉴의 $feature 요청을 거절함: $error")
     }
     fun stopTranslation() { translator.stop(); if (state.intent == DisplayIntent.Translation) dispatch(GlassesEvent.PauseDisplay) }
     fun openStandby() = dispatch(GlassesEvent.OpenStandby)

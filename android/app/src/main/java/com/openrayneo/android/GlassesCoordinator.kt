@@ -85,7 +85,15 @@ internal object GlassesCoordinator {
             is GlassesEvent.StandbyText -> state = state.copy(standby = event.view)
             is GlassesEvent.StartTranslation -> {
                 setIntent(DisplayIntent.Translation)
-                state = state.copy(translation = TranslationView(), captions = event.captions)
+                state = state.copy(translation = TranslationView(), captions = event.captions, glassesCaptions = event.captions && event.glassesPage)
+            }
+            is GlassesEvent.GlassesOffered -> {
+                state.offer?.takeIf { it.sid != event.offer.sid }?.let { effects += GlassesEffect.DeclineOffer(it) }
+                state = state.copy(offer = event.offer)
+            }
+            is GlassesEvent.ClearOffer -> state.offer?.takeIf { event.sid == null || it.sid == event.sid }?.let {
+                if (event.decline && state.link.phase == LinkPhase.FULL) effects += GlassesEffect.DeclineOffer(it)
+                state = state.copy(offer = null)
             }
             is GlassesEvent.TranslationText -> if (state.intent == DisplayIntent.Translation) state = state.copy(translation = event.view)
             GlassesEvent.ClearDisplay -> if (state.session?.mode == PageMode.PROMPT && state.ownership == DisplayOwnership.APP) {
@@ -97,7 +105,7 @@ internal object GlassesCoordinator {
             }?.let {
                 state = state.copy(audio = AudioState(AudioPhase.WAITING_PACKET, "디코더 재시작됨, 새 안경 오디오 패킷 대기"))
                 effects += GlassesEffect.StopAudio
-                effects += GlassesEffect.StartAudio(it.id, if (it.mode == PageMode.NAVIGATION) 1 else 2)
+                effects += GlassesEffect.StartAudio(it.id, it.mode.channels)
             }
             GlassesEvent.DismissAnswer -> (state.intent as? DisplayIntent.Answer)?.let { setIntent(returnIntent(it.returnTo)) }
             GlassesEvent.Disconnect -> {
@@ -148,6 +156,7 @@ internal object GlassesCoordinator {
                         }
                         is PageSignal.Failed -> {
                             cancelRestore()
+                            state.offer?.let { effects += GlassesEffect.DeclineOffer(it); state = state.copy(offer = null) }
                             state = state.copy(error = signal.message, blockedRevision = state.revision, answerPermit = null)
                         }
                         else -> Unit
@@ -163,6 +172,7 @@ internal object GlassesCoordinator {
                 }
             }
             is GlassesEvent.CloseTimedOut -> if (state.session?.id == event.id && state.session?.phase == PagePhase.CLOSING) {
+                state.offer?.let { effects += GlassesEffect.DeclineOffer(it); state = state.copy(offer = null) }
                 resetSession()
                 state = state.copy(error = "페이지 닫기가 완료되지 않았습니다. 다시 시도하세요. 안경의 실제 페이지는 알 수 없습니다", blockedRevision = state.revision)
             }
@@ -186,8 +196,11 @@ internal object GlassesCoordinator {
             effects += GlassesEffect.ClosePage(session.id)
         } else if (state.link.phase == LinkPhase.FULL && target != null && state.blockedRevision != state.revision) {
             if (session == null) {
-                val newSession = PageSession(state.nextSession, target.first, PagePhase.STARTING, target.second)
-                state = state.copy(session = newSession, nextSession = state.nextSession + 1)
+                // A pending glasses start request is answered by the first page of its business; any other page drops it.
+                val offer = state.offer?.takeIf { it.mode == target.first }
+                state.offer?.takeIf { it != offer }?.let { effects += GlassesEffect.DeclineOffer(it) }
+                val newSession = PageSession(state.nextSession, target.first, PagePhase.STARTING, target.second, offer = offer)
+                state = state.copy(session = newSession, nextSession = state.nextSession + 1, offer = null)
                 effects += GlassesEffect.StartPage(newSession)
             } else if (session.phase != PagePhase.CLOSING && session.content != target.second) {
                 state = state.copy(session = session.copy(content = target.second))
@@ -208,7 +221,9 @@ internal object GlassesCoordinator {
             DisplayIntent.BlankPrompt -> PageMode.PROMPT to PageContent("blank", "　", "　")
             DisplayIntent.PromptStandby -> PageMode.PROMPT to PageContent("standby",
                 state.standby.source.ifBlank { "OpenRayneo" }, state.standby.target.ifBlank { "실시간 힌트 준비됨" })
-            DisplayIntent.Translation -> if (state.captions) PageMode.PROMPT to PageContent("captions",
+            DisplayIntent.Translation -> if (state.captions && state.glassesCaptions) PageMode.CAPTION to PageContent("captions",
+                state.translation.source, state.translation.target)
+            else if (state.captions) PageMode.PROMPT to PageContent("captions",
                 state.translation.source.ifBlank { "실시간 자막" }, state.translation.target.ifBlank { "말소리를 기다리는 중" })
             else PageMode.PROMPT to PageContent("translation",
                 state.translation.source.ifBlank { "실시간 번역 · 한국어 ↔ 영어" }, state.translation.target.ifBlank { "말하면 번역됩니다" })
