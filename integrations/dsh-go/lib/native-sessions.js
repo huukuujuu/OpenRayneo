@@ -5,12 +5,14 @@ import {mkdir} from 'node:fs/promises'
 import {homedir} from 'node:os'
 import {join, resolve} from 'node:path'
 
-/** The absolute folder OpenRayneo sessions work in, or '' for the DSH default. Relative paths follow the folder DSH was started in. */
+export const DEFAULT_SESSION_FOLDER = 'OpenRayneo'
+/** The folder setting as typed; blank (e.g. a config saved before the field existed) means the default. */
+export function folderSetting(config) { return (config.sessionFolder ?? '').trim() || DEFAULT_SESSION_FOLDER }
+/** The absolute root folder of OpenRayneo sessions. Relative paths are under the home folder, not the engine's working folder. */
 export function sessionFolder(config) {
-  const folder = (config.sessionFolder ?? '').trim()
-  if (!folder) return ''
+  const folder = folderSetting(config)
   if (folder === '~' || folder.startsWith('~/') || folder.startsWith('~\\')) return resolve(join(homedir(), folder.slice(1)))
-  return resolve(folder)
+  return resolve(homedir(), folder)
 }
 
 /** Sub-folder (and DSH workspace) for each glasses feature, so DSH lists the sessions per feature. */
@@ -65,11 +67,10 @@ export function nativeScope(ctx, config, request) {
   const input = request.input
   if (request.kind !== 'task' || input?.source !== 'NATIVE' || input.backfill || !input.phoneId || !input.conversationKey) return
   const preset = config.agentPreset || ctx.get('agentPresets')?.defaultId || ''
-  // A configured folder starts its own sessions there; an empty folder keeps the 0.1.10 key and its existing sessions.
-  // The key holds the setting as typed, so a relative folder keeps its conversation when DSH starts elsewhere.
-  const folder = (config.sessionFolder ?? '').trim()
-  // 0.1.12 moved wake sessions into their own DSH workspace: 'workspace' keeps them apart from 0.1.11 bindings.
-  const key = JSON.stringify(folder ? [input.phoneId, input.conversationKey, preset, folder, 'workspace'] : [input.phoneId, input.conversationKey, preset])
+  // The key holds the setting as typed. 'workspace' keeps the 0.1.12+ wake sessions (own DSH workspace) apart from older
+  // bindings; 'home' (0.1.15) apart from 0.1.12–0.1.14, whose relative folder followed the engine's working folder.
+  const folder = folderSetting(config)
+  const key = JSON.stringify([input.phoneId, input.conversationKey, preset, folder, 'workspace', 'home'])
   return {key, phoneId: input.phoneId, conversationKey: input.conversationKey, preset, folder}
 }
 

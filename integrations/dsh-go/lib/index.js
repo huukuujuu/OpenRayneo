@@ -5,6 +5,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createApi } from './api.js'
 import { startHarness } from './harness.js'
+import {existsSync} from 'node:fs'
 import {nativeSessionDomain, sessionFolder} from './native-sessions.js'
 import pkg from '../package.json' with {type: 'json'}
 
@@ -15,7 +16,7 @@ export const Config = z.object({
   tokenEnv: z.string().role('credential-ref').default('OPENRAYNEO_TOKEN').volatile().description('OpenRayneo access token / 로컬 액세스 토큰 자격 증명 이름'),
   receiveVoiceTasks: z.boolean().default(true).description('Receive voice tasks / 안경 음성 작업 수신'),
   agentPreset: z.string().default('').description('Optional DSH agent preset / 선택 사항: DSH 프리셋'),
-  sessionFolder: z.string().default('OpenRayneo').description('Folder the OpenRayneo DSH sessions work in; relative to the folder DSH was started in, ~ is home, empty keeps the DSH default / OpenRayneo DSH 세션 작업 폴더 (상대 경로는 DSH를 실행한 폴더 기준, ~는 홈, 비우면 DSH 기본)'),
+  sessionFolder: z.string().default('OpenRayneo').description('Root folder of the OpenRayneo DSH sessions (one sub-folder per glasses feature); relative paths are under home, empty means OpenRayneo / OpenRayneo DSH 세션 상위 폴더 (기능별 하위 폴더, 상대 경로는 홈 기준, 비우면 OpenRayneo)'),
 })
 
 function clip(text, length) { return Array.from(text).slice(0, length).join('') }
@@ -118,7 +119,7 @@ export async function apply(ctx, config) {
   }))
 
   // Shows in the DSH engine log which plugin code is loaded and where its sessions go (the engine keeps old code until restarted).
-  ctx.logger?.info?.(`OpenRayneo 플러그인 ${pkg.version} 시작 · 세션 폴더 ${sessionFolder(config) || 'DSH 기본'}`)
+  ctx.logger?.info?.(`OpenRayneo 플러그인 ${pkg.version} 시작 · 세션 폴더 ${sessionFolder(config)}`)
   const opening = config.receiveVoiceTasks ? await ctx.storageDomain.open(nativeSessionDomain) : undefined
   const harness = startHarness(ctx, config, api, lifetime.signal, opening)
   ctx.effect(() => () => {
@@ -164,7 +165,8 @@ export async function apply(ctx, config) {
       const state = await api('/v1/status', {signal})
       const link = {FULL: '완전 연결', DISCONNECTED: '미연결', BLE_ONLY: 'BLE 전용 연결',
         SCANNING: '스캔 중', CONNECTING: '연결 중', RETRY_WAIT: '재연결 대기', CLOSING: '연결 해제 중'}[state.link] ?? '상태 알 수 없음'
-      return toast(`v${pkg.version} · 안경 ${link} · ${state.conversationRunning ? '음성 실행 중' : '음성 대기'}`)
+      // The loaded version and whether the session folder exists answer "is the new plugin running?" on the phone.
+      return toast(`v${pkg.version} · 폴더 ${existsSync(sessionFolder(config)) ? '있음' : '없음'} · 안경 ${link} · ${state.conversationRunning ? '음성 중' : '대기'}`)
     }, 10_000))
     scoped.dshGo.on('send-glasses', action('안경으로 보내기', async (scope, signal) => {
       const text = typeof scope.message === 'string' ? scope.message : ''
