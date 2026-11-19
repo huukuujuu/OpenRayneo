@@ -113,6 +113,7 @@ internal fun VirtualVoicePanel(model: AppModel) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { model.attempt { model.service().speakVirtual(text); model.notice = "가상 음성을 만드는 중…" } }, enabled = text.isNotBlank()) { Text("말하기") }
             TextButton(onClick = { model.attempt { model.service().stopVirtualVoice() } }) { Text("중지") }
+            TextButton(onClick = { model.attempt { model.service().testAsr(); model.notice = "ASR 단독 시험 중… 결과는 앱 로그에 나옵니다" } }) { Text("ASR 단독 시험") }
         }
     }
 }

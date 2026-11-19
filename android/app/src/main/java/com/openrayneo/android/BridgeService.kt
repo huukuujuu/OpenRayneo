@@ -123,7 +123,7 @@ internal class BridgeService : Service() {
                 if (count <= 5) onLog("안경 요청 수신: 0x${protocol.toString(16)} type=$type ${body.toString().take(240)}")
             }
         }
-        conversations = ConversationController(this, settings, ::notifyUI, ::conversationCapture, ::submitVoiceRequest,
+        conversations = ConversationController(this, settings, ::conversationChanged, ::conversationCapture, ::submitVoiceRequest,
             { segment, source ->
                 if (source == ConversationSource.NATIVE) segment.roundId?.let { voiceTransport.asr(segment.text, it) }
                 // Realtime hint: show what was just heard so the wearer knows the glasses are listening.
@@ -151,7 +151,7 @@ internal class BridgeService : Service() {
         }
         voiceTransport.bargeIn = { deviceSettings.state.settings.optJSONObject("voiceAssistantConfig")?.deviceFlag("workMode") == true &&
             settings.read().optBoolean("nativeAutoAnswer") && conversations.state.running && conversations.state.source == ConversationSource.NATIVE }
-        translator = LiveTranslator(this, main, { source, target, finals, final -> dispatch(GlassesEvent.TranslationText(TranslationView(source, target, finals, final))) }, ::notifyUI) {
+        translator = LiveTranslator(this, main, { source, target, finals, final -> dispatch(GlassesEvent.TranslationText(TranslationView(source, target, finals, final))) }, ::translatorChanged) {
             if (state.intent == DisplayIntent.Translation) dispatch(GlassesEvent.PauseDisplay)
         }
         audio = PromptAudio { left, right ->
@@ -740,6 +740,81 @@ internal class BridgeService : Service() {
         if (!dispatching) notifyUI()
     }
     private fun notifyUI() { if (initialized && !destroyed) observers.toList().forEach { it() } }
+
+    // Recognition problems used to show only on the records/translation screens: the app log is where testers look.
+    private var loggedConversation = ""
+    private var loggedTranslator = ""
+    private fun conversationChanged() {
+        if (initialized) {
+            val state = conversations.state
+            val line = state.error?.let { "기록 오류: $it" }
+                ?: state.status.takeIf { it.isNotBlank() && PROBLEM.containsMatchIn(it) }?.let { "기록 상태: $it" } ?: ""
+            if (line.isNotEmpty() && line != loggedConversation) onLog(line)
+            loggedConversation = line
+        }
+        notifyUI()
+    }
+    private fun translatorChanged() {
+        if (initialized) {
+            val line = translator.status
+            // A normal end-of-session reconnect is not a problem; reconnects after an error carry the error text.
+            if (line != loggedTranslator && PROBLEM.containsMatchIn(line) && !line.startsWith("ASR 세션 종료")) onLog("자막/번역 상태: $line")
+            loggedTranslator = line
+        }
+        notifyUI()
+    }
+
+    /** TEMPORARY test aid: one sentence straight into the configured ASR (and the translation variant), no glasses involved. */
+    private var asrTesting = false
+    fun testAsr() {
+        check(!virtualVoice.active) { "가상 음성을 재생 중입니다" }
+        check(!asrTesting) { "ASR 단독 시험이 이미 진행 중입니다" }
+        val base = settings.read()
+        require(SpeechRounds.ready(this, base)) { SpeechRounds.missing(base) }
+        val engine = base.optString("asrEngine").ifBlank { "cloud" }
+        virtualVoice.synthesize("안녕하세요. 음성 인식 시험입니다. What time is it now?") { result ->
+            main.post {
+                result.onFailure { onLog("ASR 단독 시험: 시험 음성 만들기 실패 ${it.message}") }.onSuccess { pcm ->
+                    asrTesting = true
+                    val translation = JSONObject(SpeechRounds.bilingual(this, base).toString()).put("asrLanguage", "ko,en")
+                    runAsrTest("기록·깨우기용 설정", base, pcm) { runAsrTest("번역용 설정(ko,en)", translation, pcm) { asrTesting = false } }
+                }
+            }
+        }
+        onLog("ASR 단독 시험 시작: 엔진 $engine, 언어 힌트 \"${base.optString("asrLanguage")}\"")
+    }
+    private fun runAsrTest(label: String, config: JSONObject, pcm: ShortArray, next: () -> Unit) {
+        val texts = mutableListOf<String>()
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        var round: SpeechRound? = null
+        // Main thread only. Cancelling also frees a local model or closes the cloud socket on every ending.
+        fun end(message: String) { if (!done.compareAndSet(false, true)) return; round?.cancel(); onLog("ASR 단독 시험 [$label]: $message"); next() }
+        round = runCatching {
+            SpeechRounds.create(this, config, { text, _, _, _, _ -> main.post { texts += text } },
+                { message -> main.post { end("실패 - $message") } },
+                { main.post { end(if (texts.isEmpty()) "끝났지만 인식 결과 없음" else "성공 - ${texts.joinToString(" / ")}") } })
+        }.getOrElse { end("만들기 실패 - ${it.message}"); return }
+        val active = checkNotNull(round)
+        Thread {
+            try {
+                active.start()
+                val resampler = ConversationAudio()
+                val audio = ShortArray(VirtualVoice.RATE / 2) + pcm + ShortArray(VirtualVoice.RATE * 3 / 2)
+                var index = 0
+                while (index < audio.size && !done.get()) {
+                    val chunk = audio.copyOfRange(index, minOf(index + 960, audio.size))
+                    while (!active.canAcceptAudio() && !done.get()) Thread.sleep(20)
+                    active.append(resampler.convert(chunk)); index += chunk.size
+                    Thread.sleep(20)
+                }
+                if (!done.get()) {
+                    active.finish()
+                    // The wait starts once all audio is in, so a slow model load is not reported as "no result".
+                    main.postDelayed({ end(if (texts.isEmpty()) "음성을 다 보낸 뒤 20초 안에 결과 없음" else "부분 성공 - ${texts.joinToString(" / ")}") }, 20_000)
+                }
+            } catch (error: Exception) { main.post { end("오류 - ${error.message}") } }
+        }.apply { name = "asr-test"; start() }
+    }
     private fun summary() = state.displayDescription + when (state.audio.phase) {
         AudioPhase.RECEIVING -> " · 음성 수신 중"
         AudioPhase.WAITING_PACKET, AudioPhase.WAITING_PCM -> " · 오디오 대기 중"
@@ -769,4 +844,5 @@ internal class BridgeService : Service() {
 }
 
 internal const val DEFAULT_ANSWER_MAX_CHARS = 60
+private val PROBLEM = Regex("실패|오류|끊|보충|미룸|대기|절전|배터리|온도|내려받|API Key|멈췄|다시 연결")
 private const val NO_VIRTUAL_TARGET = "가상 음성을 받을 기능이 없습니다. 먼저 안경에서 실시간 자막/답변/음성 메모를 열거나 깨우세요"
