@@ -5,7 +5,7 @@
 ## 현재 로컬 후보
 
 - Android: [37 release](../android/app/build/outputs/candidates/android37-1.2.0-beta.4/OpenRayneo-v37-release.apk), [37 debug](../android/app/build/outputs/candidates/android37-1.2.0-beta.4/OpenRayneo-v37-debug.apk), 버전 `1.2.0-beta.4`. CI 버전 이름은 `1.(run-23).0`, 업로드 파일 이름은 `openrayneo-<버전>-<sha7>.apk`.
-- DSH: 플러그인 0.1.12(기능별 하위 폴더 `RayNeo 깨우기`/`RayNeo 실시간 답변`/`RayNeo 실시간 힌트`/`RayNeo 종일 기록`/`RayNeo 작업`을 DSH 작업 공간으로 등록해 세션을 만든다. 듣기 모드는 판단이 agent일 때만 세션을 만들고 wait/hint는 세션 없이 끝난다. 상위 폴더는 `sessionFolder`. 기본 `OpenRayneo`는 DSH를 실행한 폴더 아래(0.1.10에서 올리면 네이티브 대화가 새 폴더에서 새로 시작), `~/...`나 절대 경로도 되고 비우면 DSH 기본 폴더. 0.1.10부터 안경 Live answers 전용 프롬프트, 0.1.9는 Live answers를 실시간 힌트처럼 처리). `integrations/dsh-go`에서 `npm pack --ignore-scripts`로 tgz를 만든다. 현재 앱은 음성 맥락을 JSON으로만 보내므로 0.1.9 이상이 필요하다(0.1.8은 모든 발화에 답한다). 이전 0.1.8 tgz는 `outputs/candidates/android37-1.2.0-beta.4/`에 있다.
+- DSH: 플러그인 0.1.13(휴대폰에서 직접 고친 같은 번호의 0.1.12를 대체, 알 수 없는 기능은 `RayNeo 작업` 폴더. 0.1.12부터 기능별 하위 폴더 `RayNeo 깨우기`/`RayNeo 실시간 답변`/`RayNeo 실시간 힌트`/`RayNeo 종일 기록`/`RayNeo 작업`을 DSH 작업 공간으로 등록해 세션을 만든다. 듣기 모드는 판단이 agent일 때만 세션을 만들고 wait/hint는 세션 없이 끝난다. 상위 폴더는 `sessionFolder`. 기본 `OpenRayneo`는 DSH를 실행한 폴더 아래(0.1.10에서 올리면 네이티브 대화가 새 폴더에서 새로 시작), `~/...`나 절대 경로도 되고 비우면 DSH 기본 폴더. 0.1.10부터 안경 Live answers 전용 프롬프트, 0.1.9는 Live answers를 실시간 힌트처럼 처리). `integrations/dsh-go`에서 `npm pack --ignore-scripts`로 tgz를 만든다. 현재 앱은 음성 맥락을 JSON으로만 보내므로 0.1.9 이상이 필요하다(0.1.8은 모든 발화에 답한다). 이전 0.1.8 tgz는 `outputs/candidates/android37-1.2.0-beta.4/`에 있다.
 - Android 되돌리기용: [36 release](../android/app/build/outputs/candidates/android36-1.2.0-beta.3/OpenRayneo-v36-release.apk). 같은 서명으로 덮어 설치하면 설정과 기록이 유지되며, 개인 저장소와 Keystore도 함께 유지된다.
 
 이것들은 개발 PC의 산출물이다. 현재 소스 빌드는 이 문서의 명령을 기준으로 하며, 저장소에는 설치 파일, 다운로드한 모델, 개인 키를 커밋하지 않는다.
@@ -84,11 +84,11 @@ npm pack --ignore-scripts --pack-destination <output-directory>
 
 ```sh
 mkdir -p "$HOME/.dsh/dsh-go/plugins/openrayneo-dsh"
-tar -xzf /sdcard/Download/openrayneo-dsh-0.1.12.tgz --strip-components=1 -C "$HOME/.dsh/dsh-go/plugins/openrayneo-dsh"
+tar -xzf /sdcard/Download/openrayneo-dsh-0.1.13.tgz --strip-components=1 -C "$HOME/.dsh/dsh-go/plugins/openrayneo-dsh"
 dsh plugin --profile web add "$HOME/.dsh/dsh-go/plugins/openrayneo-dsh"
 ```
 
-처음 설치할 때 add를 실행한다. 업데이트는 같은 폴더를 교체한 뒤 DSH "엔진" 화면에서 커널을 재시작한다. 연결 동작은 `OPENRAYNEO_TOKEN` 자격 증명 서비스에 저장된다. live 네이티브 웨이크는 웨이크를 넘어 대화를 이어 쓰며, 휴대폰 어시스턴트의 "새 대화"로 명시적으로 새로 연다. 녹음/작업/웨이크 신원은 각각 독립적이다.
+처음 설치할 때 add를 실행한다. 업데이트는 같은 폴더를 교체한 뒤 DSH "엔진" 화면에서 커널을 재시작한다. 재시작 전에는 엔진이 이전 코드를 메모리에 들고 있어 폴더가 만들어지지 않는다(실기기). 연결 동작은 `OPENRAYNEO_TOKEN` 자격 증명 서비스에 저장된다. live 네이티브 웨이크는 웨이크를 넘어 대화를 이어 쓰며, 휴대폰 어시스턴트의 "새 대화"로 명시적으로 새로 연다. 녹음/작업/웨이크 신원은 각각 독립적이다.
 
 기록 동기화 서비스의 커서와 파생 회신 규칙은 [동기화 계약](record-sync-contract.md)을 본다. 이 브랜치에는 그 Mac 클라이언트가 없다.
 

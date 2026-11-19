@@ -24,13 +24,12 @@ export function featureOf(request, facts) {
   if (source === 'REALTIME' && facts?.mode === 'live_answers') return 'live_answers'
   return source || 'task'
 }
-function featureFolder(feature) {
-  return FEATURE_FOLDERS[feature] ?? `RayNeo ${String(feature).toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}`
-}
+// Only known features get their own folder: a value sent by the app never becomes a path.
+function featureFolder(feature) { return FEATURE_FOLDERS[feature] ?? FEATURE_FOLDERS.task }
 
 /**
  * Options for a new OpenRayneo session: the configured preset, and the feature's folder (created on first use) as a DSH
- * workspace, so DSH Go lists it as a folder (0.1.11 passed only a cwd and the folder did not show up on the phone).
+ * workspace, so DSH Go lists it as a folder rather than relying on the cwd alone.
  */
 export async function sessionOptions(ctx, config, preset = config.agentPreset, feature = 'task') {
   const options = preset ? {agentPreset: preset} : {}
