@@ -122,6 +122,9 @@ internal object GlassesCoordinator {
                     state.ownership == DisplayOwnership.APP && !state.disconnecting) showAnswer(event.content)
             }
             is GlassesEvent.RevealAnswer -> if (!state.disconnecting) showAnswer(event.content)
+            is GlassesEvent.AnswerPage -> state.answer?.takeIf { it.ref == event.ref && (state.intent as? DisplayIntent.Answer)?.ref == event.ref }?.let {
+                state = state.copy(answer = it.copy(page = event.page.coerceIn(0, it.pages.lastIndex)))
+            }
             is GlassesEvent.SessionSignal -> {
                 val session = state.session
                 if (session?.id != event.id) return GlassesTransition(state, emptyList())
@@ -221,7 +224,7 @@ internal object GlassesCoordinator {
             DisplayIntent.BlankPrompt -> PageMode.PROMPT to PageContent("blank", "　", "　")
             DisplayIntent.PromptStandby -> PageMode.PROMPT to PageContent("standby",
                 state.standby.source.ifBlank { "OpenRayneo" }, state.standby.target.ifBlank { "실시간 힌트 준비됨" })
-            DisplayIntent.Translation -> if (state.glassesCaptions) PageMode.CAPTION to PageContent("captions",
+            DisplayIntent.Translation -> if (state.glassesCaptions) PageMode.CAPTION to PageContent(if (state.captions) "captions" else CAPTION_TRANSLATED,
                 state.translation.source, state.translation.target, state.translation.serial, state.translation.final)
             else if (state.captions) PageMode.PROMPT to PageContent("captions",
                 state.translation.source.ifBlank { "실시간 자막" }, state.translation.target.ifBlank { "말소리를 기다리는 중" })
@@ -231,7 +234,9 @@ internal object GlassesCoordinator {
                 PageMode.NAVIGATION to PageContent("navigation", it)
             }
             is DisplayIntent.Answer -> state.answer?.takeIf { it.ref == intent.ref }?.let {
-                PageMode.PROMPT to PageContent("${it.ref.source}:${it.ref.taskId}", it.question.ifBlank { "Agent" }, it.text)
+                // The question line shares the window: keep it short so the answer page fits.
+                PageMode.PROMPT to PageContent("${it.ref.source}:${it.ref.taskId}", it.question.ifBlank { "Agent" }.trim().let { q -> if (q.length <= 30) q else q.take(29) + "…" },
+                    it.pages.getOrElse(it.page) { _ -> it.text })
             }
         }
     }

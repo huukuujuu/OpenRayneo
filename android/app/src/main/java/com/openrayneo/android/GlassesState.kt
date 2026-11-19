@@ -4,7 +4,30 @@ package com.openrayneo.android
 
 internal enum class AnswerSource { MOBILE_AGENT, COMPUTER_CODEX }
 internal data class AnswerRef(val source: AnswerSource, val taskId: Long)
-internal data class AnswerContent(val ref: AnswerRef, val question: String, val text: String)
+internal data class AnswerContent(val ref: AnswerRef, val question: String, val text: String, val page: Int = 0) {
+    /** The glasses' answer window cuts text after roughly 120 characters: long answers are shown page by page. */
+    val pages: List<String> get() = answerPages(text)
+}
+internal const val CAPTION_TRANSLATED = "captions-translated"
+// About 120 characters fit with the question line: question ≤ 30, page ≤ 80 plus " (i/n)".
+private const val ANSWER_PAGE_CHARS = 80
+internal fun answerPages(text: String): List<String> {
+    val value = text.trim()
+    if (value.length <= ANSWER_PAGE_CHARS) return listOf(value)
+    val pages = mutableListOf<String>()
+    var rest = value
+    while (rest.isNotEmpty()) {
+        if (rest.length <= ANSWER_PAGE_CHARS) { pages += rest; break }
+        // Prefer a sentence end, then a space, inside the page; otherwise cut hard.
+        val window = rest.take(ANSWER_PAGE_CHARS)
+        val cut = (window.indexOfLast { it in ".!?。！？\n" } + 1).takeIf { it >= ANSWER_PAGE_CHARS / 2 }
+            ?: window.lastIndexOf(' ').takeIf { it >= ANSWER_PAGE_CHARS / 2 }
+            // A hard cut never splits a surrogate pair (emoji).
+            ?: if (window.last().isHighSurrogate()) ANSWER_PAGE_CHARS - 1 else ANSWER_PAGE_CHARS
+        pages += rest.take(cut).trim(); rest = rest.drop(cut).trim()
+    }
+    return pages.mapIndexed { index, page -> "$page (${index + 1}/${pages.size})" }
+}
 internal enum class ReturnTarget { IDLE, PROMPT_STANDBY, NAVIGATION }
 internal sealed interface DisplayIntent {
     data object Idle : DisplayIntent
@@ -115,6 +138,7 @@ internal sealed interface GlassesEvent {
     data class CancelAnswer(val source: AnswerSource) : GlassesEvent
     data class AnswerCompleted(val content: AnswerContent, val permit: AnswerPermit) : GlassesEvent
     data class RevealAnswer(val content: AnswerContent) : GlassesEvent
+    data class AnswerPage(val ref: AnswerRef, val page: Int) : GlassesEvent
     data class SessionSignal(val id: Long, val signal: PageSignal) : GlassesEvent
     data class AudioChanged(val id: Long, val state: AudioState) : GlassesEvent
     data class RestoreAnswer(val id: Long, val revision: Long, val ref: AnswerRef) : GlassesEvent

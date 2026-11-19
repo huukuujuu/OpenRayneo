@@ -168,7 +168,7 @@ internal class LiveTranslator(
         if (token != generation || !active || misheard(text)) return
         heard()
         // The glasses' caption screen: a partial is shown as it is, translation waits for the finished sentence.
-        if (fullLines) { sourceLine = text; targetLine = ""; render(); return }
+        if (fullLines) { sourceLine = text; render(); return }
         if (captions) { targetLine = text; render(); return }
         sourceLine = text
         render()

@@ -656,7 +656,24 @@ internal class BridgeService : Service() {
             dispatch(GlassesEvent.AnswerCompleted(AnswerContent(permit.ref, question, text), permit))
         }
     }
+    private var answerPageTask: Runnable? = null
+    private var answerPageRef: AnswerRef? = null
     private fun updateAnswerClearTimer() {
+        // Long answers turn their pages first; the clear timer starts on the last page. Pages only turn while visible.
+        val shown = state.answer?.takeIf { (state.intent as? DisplayIntent.Answer)?.ref == it.ref }
+        val visible = state.session != null && state.ownership == DisplayOwnership.APP && state.link.phase == LinkPhase.FULL
+        if (shown == null || !visible || shown.page >= shown.pages.lastIndex || answerPageRef != shown.ref) {
+            answerPageTask?.let(main::removeCallbacks); answerPageTask = null; answerPageRef = null
+        }
+        if (shown != null && visible && shown.page < shown.pages.lastIndex) {
+            if (answerPageTask == null && state.session?.let { it.phase == PagePhase.READY && it.writtenContent == it.content } == true) {
+                val ref = shown.ref; val next = shown.page + 1
+                answerPageRef = ref
+                answerPageTask = Runnable { answerPageTask = null; answerPageRef = null; dispatch(GlassesEvent.AnswerPage(ref, next)) }
+                    .also { main.postDelayed(it, ANSWER_PAGE_MS) }
+            }
+            return
+        }
         val ref = autoClearFor ?: return
         if ((state.intent as? DisplayIntent.Answer)?.ref != ref || state.ownership != DisplayOwnership.APP || state.link.phase != LinkPhase.FULL) {
             autoClearFor = null; clearAnswerTask?.let(main::removeCallbacks); clearAnswerTask = null; return
@@ -849,5 +866,6 @@ internal class BridgeService : Service() {
 }
 
 internal const val DEFAULT_ANSWER_MAX_CHARS = 60
+private const val ANSWER_PAGE_MS = 7_000L
 private val PROBLEM = Regex("실패|오류|끊|보충|미룸|대기|절전|배터리|온도|내려받|API Key|멈췄|다시 연결")
 private const val NO_VIRTUAL_TARGET = "가상 음성을 받을 기능이 없습니다. 먼저 안경에서 실시간 자막/답변/음성 메모를 열거나 깨우세요"

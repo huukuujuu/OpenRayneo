@@ -239,9 +239,12 @@ internal class GlassesDisplay(
         }
         if (status == 0) lastPartial = line.first
         writing = true
-        send(0x13, 5, JSONObject().put("sid", id).put("mode", 3).put("status", status)
+        // Official app 1.0.25: mode 3 = transcription only (the glasses ignore any translation), mode 1 = classic bilingual.
+        val mode = if (content.key == CAPTION_TRANSLATED) 1 else 3
+        send(0x13, 5, JSONObject().put("sid", id).put("mode", mode).put("status", status)
             .put("content", JSONObject().put("source_transcript", line.first)
-                .apply { if (line.second.isNotBlank()) put("target_translation", line.second) })) { result ->
+                .apply { if (line.second.isNotBlank()) put("target_translation", line.second) }
+                .put("keyword_info", "").put("label", 0))) { result ->
             if (sid != id) return@send
             writing = false
             if (result.isSuccess) flush() else fail("자막 전송 실패: ${result.exceptionOrNull()?.message}")
