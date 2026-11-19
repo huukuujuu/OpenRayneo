@@ -402,12 +402,20 @@ internal class BridgeService : Service() {
         if (state.link.phase != LinkPhase.FULL || state.disconnecting) return
         if (conversations.state.running) {
             if (conversations.state.source == ConversationSource.ALWAYS_ON || conversations.state.source == ConversationSource.VOICE_MEMO) {
-                if (conversations.state.source == ConversationSource.ALWAYS_ON) resumeAlwaysOn = conversations.state.mode.takeUnless { conversations.state.stopping }
+                // A second wake while always-on is already stopping for the first keeps the plan to resume it.
+                if (conversations.state.source == ConversationSource.ALWAYS_ON)
+                    resumeAlwaysOn = conversations.state.mode.takeUnless { conversations.state.stopping } ?: resumeAlwaysOn
                 val wake = voiceTransport.wakeId
+                // Stopping always-on takes a second or more; answer the glasses now so they stream the question,
+                // which is kept and transcribed once native capture starts (it was lost before).
+                voiceTransport.acceptWake()
+                onLog("깨우기: ${conversations.state.source.title}을 멈추고 전환하는 동안 질문 오디오를 보관")
                 conversations.handoffForWake {
-                    if (voiceTransport.nativeActive && voiceTransport.wakeId == wake && state.link.phase == LinkPhase.FULL && !state.disconnecting)
-                        startConversation(ConversationMode.DAILY, ConversationSource.NATIVE)
-                    else resumeBackground()
+                    val started = voiceTransport.nativeActive && voiceTransport.wakeId == wake && state.link.phase == LinkPhase.FULL && !state.disconnecting &&
+                        runCatching { startConversation(ConversationMode.DAILY, ConversationSource.NATIVE) }
+                            .onFailure { conversations.report(it.message ?: "깨우기 전환 실패") }.isSuccess
+                    // The glasses were told to listen early: release them when native capture did not take over.
+                    if (!started) { voiceTransport.releaseWake(wake); resumeBackground() }
                 }
                 return
             }

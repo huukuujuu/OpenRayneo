@@ -41,28 +41,68 @@ internal class GlassesVoiceTransport(
     var answeringChanged: (Boolean) -> Unit = {}
     /** Answer text being presented, so its own playback picked up by the mic does not count as an interruption. */
     private var answerText = ""
-    fun start(next: ConversationSource) {
+    /** Wake already answered with "listening" (rc 1) before native capture took over, e.g. while always-on stopped. */
+    private var acceptedWake: String? = null
+    /** Question audio that arrived while that handoff was still running; replayed when native capture starts. */
+    private val earlyAudio = ArrayDeque<ByteArray>()
+
+    /**
+     * Answer a wake at once although another capture (always-on) still owns the audio: the glasses start
+     * streaming the question only after this, and the handoff takes a second or more.
+     */
+    @Synchronized fun acceptWake() {
+        if (!nativeActive || nativeCode !in 1..6 || acceptedWake == wakeId) return
+        acceptedWake = wakeId; earlyAudio.clear()
+        send(0x0d, 2, JSONObject().put("rc", 1))
+        if (!answering) send(0x0d, 9, JSONObject().put("rc", 1))
+    }
+    /** The early-answered wake will not get native capture after all: let the glasses stop listening. */
+    @Synchronized fun releaseWake(expected: String?) {
+        if (expected == null || acceptedWake != expected) return
+        acceptedWake = null; earlyAudio.clear()
+        if (nativeActive && wakeId == expected && source != ConversationSource.NATIVE) send(0x0d, 2, JSONObject().put("rc", 2))
+    }
+    private var replaying = false
+    private fun replaySlice(expected: String?) {
+        synchronized(this) {
+            if (source != ConversationSource.NATIVE || wakeId != expected) { replaying = false; earlyAudio.clear(); return }
+            repeat(minOf(REPLAY_SLICE, earlyAudio.size)) { audio(earlyAudio.removeFirst()) }
+            if (earlyAudio.isEmpty()) { replaying = false; return }
+        }
+        main.postDelayed({ replaySlice(expected) }, REPLAY_SLICE_MS)
+    }
+    @Synchronized fun start(next: ConversationSource) {
         check(source == null || source == next) { "먼저 기존 오디오 기능을 종료하세요" }
         source = next
         when (next) {
             ConversationSource.NATIVE -> {
                 check(nativeActive && nativeCode in 1..6) { "먼저 깨우기 명령어(Hey RayNeo 등)로 안경을 깨우고 자동 응답을 켜세요" }
-                send(0x0d, 2, JSONObject().put("rc", 1))
-                if (!answering) send(0x0d, 9, JSONObject().put("rc", 1))
+                val early = acceptedWake != null && acceptedWake == wakeId
+                acceptedWake = null
+                if (!early) {
+                    earlyAudio.clear()
+                    send(0x0d, 2, JSONObject().put("rc", 1))
+                    if (!answering) send(0x0d, 9, JSONObject().put("rc", 1))
+                } else if (earlyAudio.isNotEmpty()) {
+                    // The decoder queue holds about 5 s: replay in slices; live frames queue behind until it is drained.
+                    trace("깨우기 전환 중 받은 질문 오디오 ${earlyAudio.size}개를 이어서 전사")
+                    replaying = true; replaySlice(wakeId)
+                }
             }
             ConversationSource.ALWAYS_ON -> send(0x0f, 20, JSONObject().put("cmd", "life_log_switch")
                 .put("payload", JSONObject().put("value", 1).put("mode", 0).put("data", "{\"delay\":2}")))
             ConversationSource.REALTIME, ConversationSource.VOICE_MEMO -> Unit
         }
     }
-    fun stop() {
+    @Synchronized fun stop() {
         val previous = source; source = null; lifeTask = null
+        acceptedWake = null; earlyAudio.clear(); replaying = false
         if (previous == ConversationSource.NATIVE) send(0x0d, 2, JSONObject().put("rc", 2))
         if (previous == ConversationSource.ALWAYS_ON) send(0x0f, 20, JSONObject().put("cmd", "life_log_switch")
             .put("payload", JSONObject().put("value", 0).put("mode", 0).put("data", "")))
     }
-    fun disconnected() { source = null; nativeActive = false; wakeId = null; lifeTask = null; answering = false }
-    fun receive(frame: ProtocolCodec.Frame) {
+    @Synchronized fun disconnected() { source = null; nativeActive = false; wakeId = null; lifeTask = null; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false }
+    @Synchronized fun receive(frame: ProtocolCodec.Frame) {
         if (frame.protocol == 0x0f) {
             val message = ProtocolCodec.message(frame.payload); val body = message.json?.let(::JSONObject) ?: return
             if (message.type == 21 && source == ConversationSource.ALWAYS_ON && body.optString("cmd") == "life_log_switch_result") {
@@ -77,11 +117,15 @@ internal class GlassesVoiceTransport(
         when (message.type) {
             1 -> {
                 nativeActive = true; nativeCode = body.optInt("rc"); wakeId = UUID.randomUUID().toString()
-                lastReply = null; advancedReply = null; answering = false
+                lastReply = null; advancedReply = null; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false
                 if (nativeCode in 1..6) wake()
             }
-            3 -> if (source == ConversationSource.NATIVE) message.audio?.let(audio)
-            8 -> { nativeActive = false; answering = false; if (source == ConversationSource.NATIVE) endRound(true) }
+            3 -> if (source == ConversationSource.NATIVE && !replaying) message.audio?.let(audio)
+                // Accepted early while always-on still stops (or its audio is being replayed): keep the order.
+                else if (nativeActive && (replaying || acceptedWake != null && acceptedWake == wakeId)) message.audio?.let {
+                    earlyAudio.addLast(it); while (earlyAudio.size > EARLY_AUDIO_FRAMES) earlyAudio.removeFirst()
+                }
+            8 -> { nativeActive = false; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false; if (source == ConversationSource.NATIVE) endRound(true) }
             11 -> if (answering && nativeActive) {
                 // The answer finished without an interruption; we are already listening for the next turn.
                 val sid = body.optString("sid")
@@ -211,3 +255,7 @@ internal class BargeInMeter {
         return false
     }
 }
+
+private const val EARLY_AUDIO_FRAMES = 1_000
+private const val REPLAY_SLICE = 100
+private const val REPLAY_SLICE_MS = 400L
