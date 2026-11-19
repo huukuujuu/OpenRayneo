@@ -77,12 +77,34 @@ function taskMessage(facts, input, firstTurn) {
   return lines.join('\n')
 }
 
+// Live answers: the whole conversation streams into one session; each turn carries only the lines heard since the last.
+function liveMessage(facts, input, firstTurn, lines) {
+  const out = []
+  if (firstTurn) out.push(`[RayNeo 지침] ${modePrompts.live_answers_session}${displayLimit(input)}`, '')
+  out.push(`[대화 이어짐 · ${facts.now}]`, ...lines)
+  return out.join('\n')
+}
+// The session says PASS when the wearer needs no hint now.
+function liveAnswer(text) {
+  const value = (text ?? '').trim()
+  // Also "**PASS**", "PASS - 없음", "PASS." ; an ordinary hint never starts with the upper-case word PASS.
+  return !value || /^[\s*_`"'(\[]*PASS\b/.test(value) ? '' : value
+}
+// The owner of a live conversation leaves: the newest waiter takes over (it carries the lines heard meanwhile).
+function releaseLive(conv) {
+  const next = conv.waiter
+  if (next) { conv.waiter = null; next.handed = true; next.resolve(true) } else conv.running = false
+}
+
 export function startHarness(ctx, config, api, lifetime, opening) {
   const active = new Map()
   // One DSH session per listening record and feature (in memory): agent answers of a Live answers or realtime
   // record continue one conversation instead of opening a new session for every answer.
   const listening = new Map()
   const listeningBusy = new Set()
+  // Live answers per record: one turn runs at a time; lines heard meanwhile wait in `carry`, and only the newest
+  // waiting request carries them into the next turn (older waiters finish empty at once, keeping request slots free).
+  const liveConversations = new Map()
   // Older engines may lack session state(): then only a live agent counts as an existing session.
   async function sessionAlive(sessionId, signal) {
     if (typeof ctx.sessionController.state !== 'function') return Boolean(ctx.agents.get(sessionId))
@@ -142,6 +164,7 @@ export function startHarness(ctx, config, api, lifetime, opening) {
     const monitorController = new AbortController()
     const monitorSignal = AbortSignal.any([signal, monitorController.signal])
     let sessionId, instructed = false, watching, agent, result, reservation, cancellationSent = false, cancelWork = Promise.resolve()
+    let liveConv = null, liveLines = [], ownsLive = false, livePrompted = false
     const cancel = () => {
       if (!sessionId || cancellationSent || !result) return
       cancellationSent = true
@@ -222,9 +245,37 @@ export function startHarness(ctx, config, api, lifetime, opening) {
         return
       }
       const facts = voiceFacts(request)
-      // Listening modes hear everything around the user: decide first whether an answer is needed at all,
+      const live = Boolean(facts && request.kind === 'task' && facts.mode === 'live_answers' &&
+        request.input?.source === 'REALTIME' && request.input?.recordId && !request.input?.backfill)
+      if (live) {
+        const key = JSON.stringify([request.input.recordId, config.agentPreset || ''])
+        liveConv = liveConversations.get(key)
+        if (!liveConv) {
+          liveConv = {running: false, carry: [], waiter: null}
+          liveConversations.set(key, liveConv)
+          for (const [old, conv] of liveConversations) {
+            if (liveConversations.size <= MAX_LISTENING_SESSIONS) break
+            if (!conv.running && !conv.waiter) liveConversations.delete(old)
+          }
+        }
+        liveConv.carry.push(speechLines(facts))
+        if (liveConv.running) {
+          liveConv.waiter?.resolve(false)
+          const mine = Promise.withResolvers()
+          liveConv.waiter = mine
+          let carries
+          try { carries = await abortable(mine.promise, signal) }
+          // Handed the turn but aborted before taking it: pass it on, or the record would stay "running" forever.
+          catch (error) { if (mine.handed) releaseLive(liveConv); throw error }
+          finally { if (liveConv.waiter === mine) liveConv.waiter = null }
+          if (!carries) { await finishQuick(''); return }
+        }
+        liveConv.running = true; ownsLive = true
+        liveLines = liveConv.carry.splice(0)
+      }
+      // Other listening modes hear everything around the user: decide first whether an answer is needed at all,
       // so ordinary talk never reaches the Agent or opens a DSH session.
-      if (facts && request.kind === 'task' && request.input?.source && request.input.source !== 'NATIVE') {
+      if (!live && facts && request.kind === 'task' && request.input?.source && request.input.source !== 'NATIVE') {
         const mode = prompts(facts)
         const decision = parseDecision(await complete('route', decideSystem(mode, request.input), facts))
         if (decision.route === 'wait') { await finishQuick(''); return }
@@ -235,13 +286,14 @@ export function startHarness(ctx, config, api, lifetime, opening) {
       }
       const scope = nativeScope(ctx, config, request)
       const feature = featureOf(request, facts)
+      // The live conversation has its own session: backfill agent turns of the same record never share it.
       const listenKey = !scope && facts && request.input?.recordId
-        ? JSON.stringify([request.input.recordId, feature, config.agentPreset || '']) : null
+        ? JSON.stringify([request.input.recordId, live ? 'live-session' : feature, config.agentPreset || '']) : null
       if (scope) {
         reservation = reserve(scope.key)
         await abortable(reservation.ready, signal)
         ;({sessionId, instructed} = await nativeSession(ctx, config, opening, scope, signal))
-      } else if (listenKey && !listeningBusy.has(listenKey)) {
+      } else if (listenKey && (live || !listeningBusy.has(listenKey))) {
         // One answer at a time uses the record's session; while it is busy a later answer gets a one-off session
         // instead of waiting (waiting would hold a request slot and stall the classification of later sentences).
         listeningBusy.add(listenKey)
@@ -281,19 +333,24 @@ export function startHarness(ctx, config, api, lifetime, opening) {
         : ''
       await ctx.sessionController.prompt({requestId: request.id, sessionId, mode: 'queue',
         content: [{type: 'text', text: deliveryFacts + historyNotice +
-          (facts ? taskMessage(facts, request.input, !instructed) : `${request.text}\n\n[음성 맥락]\n${request.context}`)}],
+          (live ? liveMessage(facts, request.input, !instructed, liveLines)
+            : facts ? taskMessage(facts, request.input, !instructed) : `${request.text}\n\n[음성 맥락]\n${request.context}`)}],
       }, signal)
       // Only a queued prompt counts: a turn aborted before this point must not leave the session without instructions.
       if (scope && facts && !instructed) await markInstructed(opening, scope, sessionId)
-      if (listenKey && !instructed && listening.get(listenKey)?.sessionId === sessionId) listening.set(listenKey, {sessionId, instructed: true})
+      livePrompted = true
       agent = ctx.agents.get(sessionId)
       if (!agent) throw new Error('DSH agent was not created')
       await agent.whenIdle()
       signal.throwIfAborted()
       monitorController.abort(); await watching
       if (result.reason !== 'completed') throw new Error(`DSH 작업 종료: ${result.reason || '결과 미확인'}. DSH에서 확인하세요`)
-      await settle(request.id, {state: 'completed', sessionId, answer: result.answer})
+      // Only a completed turn delivered the instructions: an aborted or removed one sends them again next time.
+      if (listenKey && !instructed && listening.get(listenKey)?.sessionId === sessionId) listening.set(listenKey, {sessionId, instructed: true})
+      await settle(request.id, {state: 'completed', sessionId, answer: live ? liveAnswer(result.answer) : result.answer})
     } catch (error) {
+      // The turn never got these lines: give them back to the next turn.
+      if (ownsLive && !livePrompted && liveLines.length) liveConv.carry.unshift(...liveLines)
       cancel()
       agent ??= sessionId ? ctx.agents.get(sessionId) : undefined
       if (result) await agent?.whenIdle().catch(() => {})
@@ -306,6 +363,8 @@ export function startHarness(ctx, config, api, lifetime, opening) {
       await cancelWork
       if (results.get(sessionId) === result) results.delete(sessionId)
       reservation?.release()
+      // Hand the session to the newest waiting request (it carries the lines heard meanwhile), or free it.
+      if (ownsLive) releaseLive(liveConv)
     }
   }
 
