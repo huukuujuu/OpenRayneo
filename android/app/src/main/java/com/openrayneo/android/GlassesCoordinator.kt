@@ -85,7 +85,7 @@ internal object GlassesCoordinator {
             is GlassesEvent.StandbyText -> state = state.copy(standby = event.view)
             is GlassesEvent.StartTranslation -> {
                 setIntent(DisplayIntent.Translation)
-                state = state.copy(translation = TranslationView(), captions = event.captions, glassesCaptions = event.captions && event.glassesPage)
+                state = state.copy(translation = TranslationView(), captions = event.captions, glassesCaptions = event.glassesPage)
             }
             is GlassesEvent.GlassesOffered -> {
                 state.offer?.takeIf { it.sid != event.offer.sid }?.let { effects += GlassesEffect.DeclineOffer(it) }
@@ -221,8 +221,8 @@ internal object GlassesCoordinator {
             DisplayIntent.BlankPrompt -> PageMode.PROMPT to PageContent("blank", "　", "　")
             DisplayIntent.PromptStandby -> PageMode.PROMPT to PageContent("standby",
                 state.standby.source.ifBlank { "OpenRayneo" }, state.standby.target.ifBlank { "실시간 힌트 준비됨" })
-            DisplayIntent.Translation -> if (state.captions && state.glassesCaptions) PageMode.CAPTION to PageContent("captions",
-                state.translation.source, state.translation.target, state.translation.serial)
+            DisplayIntent.Translation -> if (state.glassesCaptions) PageMode.CAPTION to PageContent("captions",
+                state.translation.source, state.translation.target, state.translation.serial, state.translation.final)
             else if (state.captions) PageMode.PROMPT to PageContent("captions",
                 state.translation.source.ifBlank { "실시간 자막" }, state.translation.target.ifBlank { "말소리를 기다리는 중" })
             else PageMode.PROMPT to PageContent("translation",

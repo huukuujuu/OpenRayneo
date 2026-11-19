@@ -19,7 +19,7 @@ private val storedLabels = listOf(SELF_SPEAKER to "본인", MIXED_SPEAKER to "�
 fun displayLabel(raw: String) = storedLabels.fold(raw) { text, (stored, shown) -> text.replace(stored, shown) }
 
 internal enum class ConversationMode(val title: String) { DAILY("일상"), MEETING("회의"), ENROLL("목소리 등록") }
-internal enum class ConversationSource(val title: String) { REALTIME("실시간 듀얼 마이크"), NATIVE("음성 깨우기"), ALWAYS_ON("종일 기록") }
+internal enum class ConversationSource(val title: String) { REALTIME("실시간 듀얼 마이크"), NATIVE("음성 깨우기"), ALWAYS_ON("종일 기록"), VOICE_MEMO("안경 음성 메모") }
 internal data class VoiceMatch(val personId: String, val score: Float) {
     fun json() = JSONObject().put("personId", personId).put("score", score)
 }

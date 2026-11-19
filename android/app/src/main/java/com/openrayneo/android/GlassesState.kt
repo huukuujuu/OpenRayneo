@@ -25,13 +25,14 @@ internal val PageMode.channels: Int get() = if (this == PageMode.PROMPT) 2 else 
 internal data class GlassesOffer(val mode: PageMode, val sid: String, val settings: String?) { val protocol get() = mode.protocol }
 internal enum class PagePhase { STARTING, LAYOUT, SETTLING, READY, CLOSING }
 /** [serial] counts finished caption sentences, so the same words said twice are still two finals. */
-internal data class PageContent(val key: String, val text: String, val answer: String? = null, val serial: Long = 0)
+internal data class PageContent(val key: String, val text: String, val answer: String? = null, val serial: Long = 0, val final: Boolean = false)
 internal data class PageSession(
     val id: Long, val mode: PageMode, val phase: PagePhase, val content: PageContent,
     val writtenContent: PageContent? = null,
     val offer: GlassesOffer? = null,
 )
-internal data class TranslationView(val source: String = "", val target: String = "", val serial: Long = 0)
+/** For the glasses' caption screen: [final] = [source]/[target] is finished sentence number [serial], otherwise [source] is a partial. */
+internal data class TranslationView(val source: String = "", val target: String = "", val serial: Long = 0, val final: Boolean = false)
 internal data class NavigationState(val enabled: Boolean = false, val key: String? = null, val frame: String? = null)
 internal enum class AudioPhase { STOPPED, WAITING_PACKET, WAITING_PCM, RECEIVING, STALLED, FAILED }
 internal data class AudioState(val phase: AudioPhase = AudioPhase.STOPPED, val detail: String = "안경 음성 수신이 중지됨")

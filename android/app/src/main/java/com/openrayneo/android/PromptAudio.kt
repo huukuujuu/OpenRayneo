@@ -48,6 +48,8 @@ internal class PromptAudio(private val consume: (ShortArray, ShortArray) -> Unit
     private val thread = HandlerThread("glasses-opus").apply { start() }
     private val worker = Handler(thread.looper)
     private val queued = AtomicInteger()
+    /** Packets accepted but not decoded yet. */
+    val pending: Int get() = queued.get()
     private val dropped = AtomicInteger()
     @Volatile private var generation = 0
     @Volatile var state = State(); private set

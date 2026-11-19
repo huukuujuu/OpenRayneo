@@ -334,7 +334,7 @@ internal class ConversationController(private val context: Context, private val 
                     saveRecord()
                     val token = generation; val source = state.source
                     if (!replaying) main.post { if (token == generation && state.running) transcript(segment, source) }
-                    if (source != ConversationSource.NATIVE || segment.roundId == roundId) pendingAgent += segment
+                    if (source != ConversationSource.VOICE_MEMO && (source != ConversationSource.NATIVE || segment.roundId == roundId)) pendingAgent += segment
                 }
             }
         }
@@ -408,7 +408,11 @@ internal class ConversationController(private val context: Context, private val 
         val contextGeneration = agentContextGeneration
         worker.post { if (contextGeneration == agentContextGeneration) { previous = listOf(question); previousReply = reply } }
     }
-    fun handoffForWake(ready: () -> Unit) { if (!state.running) main.post(ready) else { stopAfter = ready; stop() } }
+    /** Stop quickly for something the user is waiting on (wake word, glasses menu): unfinished channels are backfilled later from the saved audio. */
+    fun handoffForWake(ready: () -> Unit) {
+        if (!state.running) main.post(ready) else { stopAfter = ready; if (!closing) quickStop = true; stop() }
+    }
+    @Volatile private var quickStop = false
     private var stopAfter: (() -> Unit)? = null
     fun stop() {
         if (!state.running || closing) return
@@ -418,6 +422,7 @@ internal class ConversationController(private val context: Context, private val 
             val count = if (savingAudio && captureChannels > 0) recordings.finish() else if (replaying) record!!.audioSamples else samples
             savingAudio = false
             worker.post {
+                if (quickStop) deferredProcessing = true
                 if (liveBackfill && !deferredProcessing) runCatching {
                     while (activeASR.values.all { it.canAcceptAudio() }) { val pcm = tail?.nextBlock() ?: break; val begin = tailSamples; tailSamples += pcm.frames; process(pcm, begin) }
                 }.onFailure { pauseLive(it.message ?: "마무리 후 보충 대기") }
@@ -428,13 +433,13 @@ internal class ConversationController(private val context: Context, private val 
                 if (rounds.isEmpty()) completeStop() else {
                     val token = generation
                     drainTimeout = Runnable { if (token == generation && closing) { cancelASR(); replayFailed = replaying; deferredProcessing = true; record = record?.copy(processingPending = true); completeStop("미완료 채널은 나중에 원본 오디오에서 보충합니다") } }
-                        .also { worker.postDelayed(it, 30_000) }
+                        .also { worker.postDelayed(it, if (quickStop) 1_500 else 30_000) }
                 }
             }
         }
     }
     private fun completeStop(message: String = "모든 원본 오디오와 채널별 완료된 발화를 저장함") {
-        drainTimeout?.let(worker::removeCallbacks); drainTimeout = null
+        drainTimeout?.let(worker::removeCallbacks); drainTimeout = null; quickStop = false
         tail?.close(); tail = null; engines.values.forEach { it.flush() }; drainSentences()
         if (replaying && replayReadComplete && !replayFailed && !deferredProcessing) record = record?.copy(processingPending = false)
         else if (replaying) { record = record?.copy(processingPending = true); nextBackfillAt = System.currentTimeMillis() + 60_000 }
@@ -559,7 +564,10 @@ internal class ConversationController(private val context: Context, private val 
         publish(state.copy(records = repository.records, people = repository.people, activeRecord = if (state.running) record else null))
     } }
     fun configurationChanged() { worker.post { nextBackfillAt = 0; if (!state.running) resumePending() } }
+    /** Something else uses ASR right now (live captions): leave saved audio for later. */
+    @Volatile var backfillHold: () -> Boolean = { false }
     private fun resumePending() {
+        if (backfillHold()) return
         if (state.running || closing || resourceConstraint() != null || System.currentTimeMillis() < nextBackfillAt || !SpeechRounds.ready(context, settings.read())) return
         repository.records.filter { it.processingPending && !it.audioPending && it.audioSamples > 0 }.minByOrNull { it.createdAt }?.let { retranscribe(it.id) }
     }

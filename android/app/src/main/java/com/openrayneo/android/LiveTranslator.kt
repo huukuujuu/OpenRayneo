@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
 internal class LiveTranslator(
     private val context: android.content.Context,
     private val main: Handler,
-    private val show: (source: String, target: String, finals: Long) -> Unit,
+    private val show: (source: String, target: String, finals: Long, final: Boolean) -> Unit,
     private val changed: () -> Unit,
     /** The translator gave up on its own (e.g. repeated ASR failures); the owner should close the window. */
     private val gaveUp: () -> Unit,
@@ -74,7 +74,7 @@ internal class LiveTranslator(
         stop()
         synchronized(this) {
             this.captions = captions
-            this.fullLines = captions && fullLines
+            this.fullLines = fullLines
             config = if (captions) JSONObject(settings.toString())
                 else JSONObject(SpeechRounds.bilingual(context, settings).toString()).put("asrLanguage", "ko,en")
             generation++
@@ -161,12 +161,14 @@ internal class LiveTranslator(
 
     private fun listening() = if (captions) CAPTIONS_LISTENING else LISTENING
     private var finals = 0L
-    private fun render() = if (fullLines) show(sourceLine.trim(), targetLine.trim(), finals)
-        else show(clip(sourceLine, SOURCE_LIMIT), if (captions) clip(targetLine, TARGET_LIMIT) else targetLine, finals)
+    private fun render(final: Boolean = false) = if (fullLines) show(sourceLine.trim(), targetLine.trim(), finals, final)
+        else show(clip(sourceLine, SOURCE_LIMIT), if (captions) clip(targetLine, TARGET_LIMIT) else targetLine, finals, false)
 
     private fun interim(token: Int, text: String) {
         if (token != generation || !active || misheard(text)) return
         heard()
+        // The glasses' caption screen: a partial is shown as it is, translation waits for the finished sentence.
+        if (fullLines) { sourceLine = text; targetLine = ""; render(); return }
         if (captions) { targetLine = text; render(); return }
         sourceLine = text
         render()
@@ -194,6 +196,11 @@ internal class LiveTranslator(
         heard()
         // Neither Korean nor English (typically noise or Korean misread as Chinese): never show or translate it.
         if (misheard(text)) { committed = ""; pieceAt = 0L; return }
+        if (fullLines) {
+            committed = ""; pieceAt = 0L
+            if (captions) { sourceLine = text; targetLine = ""; finals++; render(final = true) } else translateLine(token, text)
+            return
+        }
         if (captions) { sourceLine = text; targetLine = ""; finals++; render(); return }
         // Pieces of this sentence were already translated from the partial text; translate only what is left.
         // If the final rewrote those words (e.g. filler removal), translate it whole rather than lose words.
@@ -202,6 +209,26 @@ internal class LiveTranslator(
         sourceLine = text
         if (rest.isEmpty()) { render(); return }
         translatePiece(token, rest)
+    }
+
+    /** Every finished sentence is translated and shown in order (single-thread executor): none is skipped. */
+    private fun translateLine(token: Int, text: String) {
+        val from = if (isKorean(text)) "Korean" else "English"
+        val to = if (from == "Korean") "English" else "Korean"
+        val context = history.toList()
+        val snapshot = config
+        translations.execute {
+            if (token != generation) return@execute
+            val result = runCatching { translate(token, snapshot, text, from, to, context) }
+            main.post {
+                if (token != generation || !active) return@post
+                val translated = result.getOrElse { error ->
+                    status = "번역 실패: ${error.message ?: error.javaClass.simpleName}"; changed(); ""
+                }
+                if (translated.isNotEmpty()) { history.addLast(text to translated); while (history.size > 3) history.removeFirst() }
+                sourceLine = text; targetLine = translated; finals++; render(final = true)
+            }
+        }
     }
 
     private fun translatePiece(token: Int, text: String) {

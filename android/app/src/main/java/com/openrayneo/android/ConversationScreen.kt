@@ -60,7 +60,7 @@ internal fun ConversationScreen(model: AppModel, actions: UiActions, open: (Stri
                 Note("종일 기록은 타임라인과 요약으로 표시되며, 개별 기록은 각자의 시작·종료 시간과 내용을 보존합니다. 본인, 타인, 미상／겹친 발화를 모두 저장하며, 원문을 탭하면 인물 귀속을 수정할 수 있습니다.")
                 if (!state.running) {
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ConversationSource.entries.forEach { option -> FilterChip(source == option, { source = option }, label = { Text(option.title) }) }
+                        ConversationSource.entries.filter { it != ConversationSource.VOICE_MEMO }.forEach { option -> FilterChip(source == option, { source = option }, label = { Text(option.title) }) }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ToolButton(onClick = { model.attempt { model.service().startConversation(ConversationMode.DAILY, source) } },

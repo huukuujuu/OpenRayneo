@@ -23,6 +23,7 @@ internal class BridgeService : Service() {
     lateinit var deviceSettings: GlassesDeviceSettings; private set
     private val bargeMeter = BargeInMeter()
     lateinit var teleprompter: TeleprompterLibrary; private set
+    private lateinit var voiceMemo: VoiceMemo
     lateinit var agentServer: LocalAgentServer; private set
     lateinit var recordSync: RecordSyncServer; private set
     lateinit var content: CompanionContent; private set
@@ -93,6 +94,7 @@ internal class BridgeService : Service() {
             { dispatch(GlassesEvent.LinkChanged(it)) }, { devices[it.bluetooth.address] = it; notifyUI() },
             { frame, source -> runCatching {
                 teleprompter.observe(frame)
+                voiceMemo.receive(frame)
                 requests.receive(frame)
                 // Assistant control events (not audio) go to the app log, to see how the firmware behaves around barge-in.
                 if (frame.protocol == 0x0d) ProtocolCodec.message(frame.payload).let { m ->
@@ -113,8 +115,8 @@ internal class BridgeService : Service() {
         }, { name, args, allowed, completion -> requests.withPermission(allowed) { executeTool(name, args, completion) } }, { agent.harness }, ::recordAPI)
         requests.observe = { protocol, type, body ->
             when (protocol) { 15 -> deviceSettings.observe(type, body); 22 -> content.observe(type, body) }
-            // Voice memo and the glasses' teleprompter requests are not mapped from a real device yet: log the first of each kind.
-            if (protocol == 0x0e && type != 3 || protocol == 0x14 && body.optInt("action") == 1) {
+            // The glasses' teleprompter requests are not mapped from a real device yet: log the first of each kind.
+            if (protocol == 0x14 && body.optInt("action") == 1) {
                 val key = "$protocol:$type"
                 val count = glassesRequestSeen.merge(key, 1, Int::plus) ?: 1
                 if (count <= 5) onLog("안경 요청 수신: 0x${protocol.toString(16)} type=$type ${body.toString().take(240)}")
@@ -147,12 +149,16 @@ internal class BridgeService : Service() {
         }
         voiceTransport.bargeIn = { deviceSettings.state.settings.optJSONObject("voiceAssistantConfig")?.deviceFlag("workMode") == true &&
             settings.read().optBoolean("nativeAutoAnswer") && conversations.state.running && conversations.state.source == ConversationSource.NATIVE }
-        translator = LiveTranslator(this, main, { source, target, finals -> dispatch(GlassesEvent.TranslationText(TranslationView(source, target, finals))) }, ::notifyUI) {
+        translator = LiveTranslator(this, main, { source, target, finals, final -> dispatch(GlassesEvent.TranslationText(TranslationView(source, target, finals, final))) }, ::notifyUI) {
             if (state.intent == DisplayIntent.Translation) dispatch(GlassesEvent.PauseDisplay)
         }
         audio = PromptAudio { left, right ->
             if (translator.active) translator.accept(left, right)
             else if (conversations.state.running && conversations.state.source == ConversationSource.REALTIME) conversations.accept(left, right)
+        }
+        conversations.backfillHold = { translator.active }
+        voiceMemo = VoiceMemo(this, conversations.repository, connection::sendFrame, ::onLog) {
+            conversations.refreshRecords(); conversations.configurationChanged()
         }
         display = GlassesDisplay(connection::sendFrame,
             { task, delay -> main.postDelayed(task, delay) }, { main.removeCallbacks(it) }, ::onLog,
@@ -212,7 +218,7 @@ internal class BridgeService : Service() {
                 state = transition.state
                 if (previous.link.phase == LinkPhase.FULL && state.link.phase != LinkPhase.FULL) {
                     conversations.stop(); voiceTransport.disconnected(); voiceAudio.stop()
-                    requests.disconnected(); deviceSettings.disconnected(); content.disconnected(); teleprompter.disconnected()
+                    requests.disconnected(); deviceSettings.disconnected(); content.disconnected(); teleprompter.disconnected(); voiceMemo.disconnected()
                     if (state.offer != null) events.add(GlassesEvent.ClearOffer(null, decline = false))
                 }
                 if (previous.link.phase != LinkPhase.FULL && state.link.phase == LinkPhase.FULL) { content.connected(); teleprompter.connected(); runCatching { deviceSettings.refresh() } }
@@ -226,6 +232,7 @@ internal class BridgeService : Service() {
                     translator.stop(); events.add(GlassesEvent.PauseDisplay)
                 } else if (translator.active && state.intent != DisplayIntent.Translation) translator.stop()
                 updateAnswerClearTimer()
+                if (resumeAlwaysOn != null && previous.intent != DisplayIntent.Idle && state.intent == DisplayIntent.Idle) main.post(::resumeBackground)
                 if (state.displayDescription != previous.displayDescription) onLog(state.displayDescription)
                 transition.effects.forEach { effect ->
                     runCatching { execute(effect) }.onFailure { error ->
@@ -342,8 +349,8 @@ internal class BridgeService : Service() {
         if (!settings.read().optBoolean("nativeAutoAnswer")) return
         if (state.link.phase != LinkPhase.FULL || state.disconnecting) return
         if (conversations.state.running) {
-            if (conversations.state.source == ConversationSource.ALWAYS_ON) {
-                resumeAlwaysOn = conversations.state.mode.takeUnless { conversations.state.stopping }
+            if (conversations.state.source == ConversationSource.ALWAYS_ON || conversations.state.source == ConversationSource.VOICE_MEMO) {
+                if (conversations.state.source == ConversationSource.ALWAYS_ON) resumeAlwaysOn = conversations.state.mode.takeUnless { conversations.state.stopping }
                 val wake = voiceTransport.wakeId
                 conversations.handoffForWake {
                     if (voiceTransport.nativeActive && voiceTransport.wakeId == wake && state.link.phase == LinkPhase.FULL && !state.disconnecting)
@@ -362,14 +369,19 @@ internal class BridgeService : Service() {
     private fun resumeBackground() {
         val mode = resumeAlwaysOn ?: return
         if (destroyed || state.disconnecting || state.link.phase != LinkPhase.FULL) { resumeAlwaysOn = null; return }
-        if (voiceTransport.nativeActive || conversations.state.running) return
+        // A glasses page (captions, hint) is still open: the dispatch loop calls again once it closes.
+        if (translator.active || state.intent != DisplayIntent.Idle) return
+        if (voiceTransport.nativeActive || conversations.state.running) { main.removeCallbacks(resumeRetry); main.postDelayed(resumeRetry, 2_000); return }
         resumeAlwaysOn = null
         startConversation(mode, ConversationSource.ALWAYS_ON)
     }
+    private val resumeRetry = Runnable { resumeBackground() }
     private fun conversationCapture(source: ConversationSource, start: Boolean) {
         if (start) {
             when (source) {
                 ConversationSource.REALTIME -> { conversationOwnsDisplay = true; dispatch(GlassesEvent.OpenStandby) }
+                // Voice memo records are only ever re-transcribed from saved audio, never captured live here.
+                ConversationSource.VOICE_MEMO -> Unit
                 ConversationSource.NATIVE, ConversationSource.ALWAYS_ON -> {
                     conversationOwnsDisplay = false
                     dispatch(GlassesEvent.PauseDisplay); voiceAudio.start(1); voiceTransport.start(source)
@@ -453,8 +465,9 @@ internal class BridgeService : Service() {
         lastGlassesStart = sid
         val feature = if (protocol == 0x13) "실시간 자막" else "실시간 답변"
         // Never end something the user started for a request from the glasses menu.
+        // Background voice records (wake, all-day, voice-memo transcription) yield; the realtime hint the user opened does not.
         val busy = when {
-            conversations.state.running -> "기록(${conversations.state.source.title}) 실행 중"
+            conversations.state.running && conversations.state.source == ConversationSource.REALTIME -> "실시간 힌트 기록 실행 중"
             translator.active -> if (translator.captions) "앱 실시간 자막 실행 중" else "실시간 번역 실행 중"
             state.intent != DisplayIntent.Idle && state.intent != DisplayIntent.PromptStandby -> "다른 안경 화면 표시 중"
             else -> null
@@ -462,11 +475,27 @@ internal class BridgeService : Service() {
         val error = busy ?: runCatching {
             // Check what can still refuse before touching the user's page.
             check(state.link.phase == LinkPhase.FULL && !state.disconnecting) { "안경 연결이 완전하지 않음" }
-            if (protocol == 0x13) translator.validate(this.settings.read(), captions = true)
+            val config = this.settings.read()
+            // Live captions translate Korean <-> English when the summary model is set, otherwise they only transcribe.
+            val translate = protocol == 0x13 && runCatching { translator.validate(config, captions = false) }.isSuccess
+            if (protocol == 0x13 && !translate) translator.validate(config, captions = true)
             // Our idle/standby page would keep the business busy and the request unanswered: close it so the new page answers it.
             if (state.session != null) dispatch(GlassesEvent.PauseDisplay)
-            dispatch(GlassesEvent.GlassesOffered(GlassesOffer(if (protocol == 0x13) PageMode.CAPTION else PageMode.PROMPT, sid, settings)))
-            if (protocol == 0x13) startTranslation(captions = true, glassesPage = true) else startRealtimeHint()
+            val final = settings?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject()
+            if (translate) final.put("source_language", "ko-KR").put("target_language", "en-US")
+            dispatch(GlassesEvent.GlassesOffered(GlassesOffer(if (protocol == 0x13) PageMode.CAPTION else PageMode.PROMPT, sid, final.toString())))
+            val begin = { if (protocol == 0x13) startTranslation(captions = !translate, glassesPage = true) else startRealtimeHint() }
+            if (conversations.state.running) {
+                onLog("안경 메뉴의 $feature 요청: ${conversations.state.source.title} 기록을 멈추고 시작 (남은 전사는 나중에 보충)")
+                if (conversations.state.source == ConversationSource.ALWAYS_ON) resumeAlwaysOn = conversations.state.mode.takeUnless { conversations.state.stopping }
+                conversations.handoffForWake {
+                    // The 8 s answer window may have closed (request refused) while the record was stopping.
+                    if (state.offer?.sid != sid) return@handoffForWake
+                    runCatching(begin).onFailure { error ->
+                        dispatch(GlassesEvent.ClearOffer(sid, decline = true)); onLog("안경 메뉴의 $feature 요청을 시작하지 못함: ${error.message}")
+                    }
+                }
+            } else begin()
         }.exceptionOrNull()?.let { it.message ?: "시작 실패" }
         if (error == null) {
             onLog("안경 메뉴의 $feature 요청 → 안경 화면에서 시작")
@@ -689,7 +718,7 @@ internal class BridgeService : Service() {
     override fun onDestroy() {
         destroyed = true; observers.clear(); main.removeCallbacksAndMessages(null)
         navigation.observers.remove(navigationObserver)
-        translator.close(); agent.close(); codex.close(); conversations.close(); agentServer.close(); recordSync.close(); requests.close(); content.close(); display.reset(); audio.close(); voiceAudio.close(); supervisor.close()
+        translator.close(); voiceMemo.close(); agent.close(); codex.close(); conversations.close(); agentServer.close(); recordSync.close(); requests.close(); content.close(); display.reset(); audio.close(); voiceAudio.close(); supervisor.close()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

@@ -59,7 +59,7 @@
 | --- | --- |
 | `id,revision` | 휴대폰 기록 신원과 원본 버전 |
 | `mode` | `DAILY` / `MEETING` / `ENROLL` |
-| `source` | `REALTIME` / `NATIVE` / `ALWAYS_ON` |
+| `source` | `REALTIME` / `NATIVE` / `ALWAYS_ON` / `VOICE_MEMO`(안경 메뉴 음성 메모, 저장 오디오에서 나중에 전사) |
 | `createdAt,endedAt` | Unix 밀리초, endedAt은 비어 있을 수 있음. 오디오 샘플 offset이 아님 |
 | `title,segments,summary,summaryStale` | 원문과 이전 버전 요약 호환 필드 |
 | `summaries,memories,derived` | 요약 스냅숏, 기억, 파생 |

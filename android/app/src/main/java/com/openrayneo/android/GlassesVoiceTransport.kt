@@ -52,7 +52,7 @@ internal class GlassesVoiceTransport(
             }
             ConversationSource.ALWAYS_ON -> send(0x0f, 20, JSONObject().put("cmd", "life_log_switch")
                 .put("payload", JSONObject().put("value", 1).put("mode", 0).put("data", "{\"delay\":2}")))
-            ConversationSource.REALTIME -> Unit
+            ConversationSource.REALTIME, ConversationSource.VOICE_MEMO -> Unit
         }
     }
     fun stop() {
