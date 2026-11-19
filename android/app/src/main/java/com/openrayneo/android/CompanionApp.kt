@@ -337,6 +337,7 @@ private fun GlassesScreen(
                             Text(if (captions) "자막 종료" else "번역 종료")
                         }
                     } else if (model.state.translationStatus != "실시간 번역 꺼짐") Note(model.state.translationStatus)
+                    VirtualVoicePanel(model)
                     if (state.session?.mode == PageMode.PROMPT && state.session.phase == PagePhase.READY)
                         TextButton(onClick = { model.attempt { model.service().clearDisplay() } }) {
                             Text("화면 지우기 (음성 수신 유지)")

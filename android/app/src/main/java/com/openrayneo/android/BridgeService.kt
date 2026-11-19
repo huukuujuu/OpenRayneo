@@ -24,6 +24,7 @@ internal class BridgeService : Service() {
     private val bargeMeter = BargeInMeter()
     lateinit var teleprompter: TeleprompterLibrary; private set
     private lateinit var voiceMemo: VoiceMemo
+    private val virtualVoice by lazy { VirtualVoice(this) }
     lateinit var agentServer: LocalAgentServer; private set
     lateinit var recordSync: RecordSyncServer; private set
     lateinit var content: CompanionContent; private set
@@ -133,6 +134,7 @@ internal class BridgeService : Service() {
         recordSync = RecordSyncServer(settings, conversations.repository, conversations.recordings, main, ::notifyUI)
         if (settings.read().optBoolean("recordSyncEnabled")) recordSync.start()
         voiceAudio = PromptAudio { left, right ->
+            if (virtualVoice.active) return@PromptAudio
             if (bargeMeter.feed(left)) main.post { voiceTransport.voiceDuringAnswer() }
             conversations.accept(left, right)
         }
@@ -153,6 +155,7 @@ internal class BridgeService : Service() {
             if (state.intent == DisplayIntent.Translation) dispatch(GlassesEvent.PauseDisplay)
         }
         audio = PromptAudio { left, right ->
+            if (virtualVoice.active) return@PromptAudio
             if (translator.active) translator.accept(left, right)
             else if (conversations.state.running && conversations.state.source == ConversationSource.REALTIME) conversations.accept(left, right)
         }
@@ -507,6 +510,47 @@ internal class BridgeService : Service() {
         display.decline(protocol, sid)
         onLog("안경 메뉴의 $feature 요청을 거절함: $error")
     }
+    // TEMPORARY test aid (remove after the glasses-menu verification): virtual voice into whatever is listening now.
+    fun speakVirtual(text: String) {
+        require(text.isNotBlank()) { "말할 문장을 입력하세요" }
+        check(!virtualVoice.active) { "가상 음성을 이미 재생 중입니다" }
+        virtualTarget() ?: error(NO_VIRTUAL_TARGET)
+        virtualVoice.synthesize(text.trim()) { result ->
+            main.post { result.fold({ playVirtual(it) }, { onLog("가상 음성 만들기 실패: ${it.message}") }) }
+        }
+    }
+    fun injectVirtualWav(bytes: ByteArray) {
+        check(!virtualVoice.active) { "가상 음성을 이미 재생 중입니다" }
+        virtualTarget() ?: error(NO_VIRTUAL_TARGET)
+        playVirtual(VirtualVoice.wav(bytes))
+    }
+    fun stopVirtualVoice() = virtualVoice.stop()
+    /** Where decoded glasses audio would go right now, same priority as the real consumers. */
+    private fun virtualTarget(): String? = when {
+        translator.active -> if (translator.captions) "실시간 자막" else "실시간 번역"
+        voiceMemo.recording -> "음성 메모"
+        conversations.state.running && !conversations.state.stopping && conversations.state.source != ConversationSource.VOICE_MEMO -> conversations.state.source.title
+        else -> null
+    }
+    private fun playVirtual(pcm: ShortArray) {
+        val target = virtualTarget() ?: run { onLog(NO_VIRTUAL_TARGET); return }
+        if (virtualVoice.active) { onLog("가상 음성을 이미 재생 중입니다"); return }
+        onLog("가상 음성 재생 → $target (${pcm.size / VirtualVoice.RATE}초)")
+        voiceMemo.injecting = true
+        val silence = ShortArray(0)
+        virtualVoice.play(pcm, { chunk ->
+            when {
+                translator.active -> { translator.accept(chunk, chunk); true }
+                voiceMemo.recording -> voiceMemo.inject(chunk)
+                conversations.state.running && conversations.state.source == ConversationSource.REALTIME -> {
+                    // Same channel count as the glasses page audio; with two channels the wearer is channel 1, the other hears nothing.
+                    conversations.accept(chunk, if (audio.state.channels == 2) ShortArray(chunk.size) else silence); true
+                }
+                conversations.state.running && conversations.state.source != ConversationSource.VOICE_MEMO -> { conversations.accept(chunk, silence); true }
+                else -> false
+            }
+        }) { error -> main.post { if (!virtualVoice.active) voiceMemo.injecting = false; onLog(error ?: "가상 음성 재생 끝") } }
+    }
     fun stopTranslation() { translator.stop(); if (state.intent == DisplayIntent.Translation) dispatch(GlassesEvent.PauseDisplay) }
     fun openStandby() = dispatch(GlassesEvent.OpenStandby)
     /** One-tap realtime hint: open the window and start the realtime dual-mic record that actually processes speech. */
@@ -718,10 +762,11 @@ internal class BridgeService : Service() {
     override fun onDestroy() {
         destroyed = true; observers.clear(); main.removeCallbacksAndMessages(null)
         navigation.observers.remove(navigationObserver)
-        translator.close(); voiceMemo.close(); agent.close(); codex.close(); conversations.close(); agentServer.close(); recordSync.close(); requests.close(); content.close(); display.reset(); audio.close(); voiceAudio.close(); supervisor.close()
+        translator.close(); virtualVoice.close(); voiceMemo.close(); agent.close(); codex.close(); conversations.close(); agentServer.close(); recordSync.close(); requests.close(); content.close(); display.reset(); audio.close(); voiceAudio.close(); supervisor.close()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 }
 
 internal const val DEFAULT_ANSWER_MAX_CHARS = 60
+private const val NO_VIRTUAL_TARGET = "가상 음성을 받을 기능이 없습니다. 먼저 안경에서 실시간 자막/답변/음성 메모를 열거나 깨우세요"

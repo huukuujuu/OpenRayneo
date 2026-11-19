@@ -31,6 +31,8 @@ internal class VoiceMemo(
         val recordId = UUID.randomUUID().toString()
         val startedAt = System.currentTimeMillis()
         private val resampler = ConversationAudio()
+        /** Virtual voice has its own filter state: the decoder thread and the worker never share one. */
+        val injectResampler = ConversationAudio()
         @Volatile var open = true
         var nextOffset = 0L
         var paused = false
@@ -38,12 +40,23 @@ internal class VoiceMemo(
         var gapReported = false
         val remainder = java.io.ByteArrayOutputStream()
         val decoder = PromptAudio { left, right ->
+            if (injecting) return@PromptAudio
             val mixed = if (right.size == left.size) ShortArray(left.size) { ((left[it].toInt() + right[it].toInt()) / 2).toShort() } else left
             val pcm = resampler.convert(mixed)
             synchronized(store) { if (open) store.append(pcm) }
         }
     }
-    private var active: Capture? = null
+    @Volatile private var active: Capture? = null
+    /** TEMPORARY test aid: while virtual voice plays, the glasses' own audio is ignored. */
+    @Volatile var injecting = false
+    val recording get() = active != null
+
+    /** TEMPORARY test aid: 48 kHz mono PCM recorded as if it came from the glasses. */
+    fun inject(pcm: ShortArray): Boolean {
+        val capture = active ?: return false
+        worker.post { val samples = capture.injectResampler.convert(pcm); synchronized(store) { if (capture.open) store.append(samples) } }
+        return true
+    }
     private val close = Runnable { runCatching { active?.takeIf { it.stopping }?.let { closeNow(it, "안경 음성 메모 저장") } }.onFailure { log("음성 메모 저장 실패: ${it.message}") } }
 
     /** Any thread: frames from BLE or SPP. */
