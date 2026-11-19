@@ -832,10 +832,14 @@ internal class BridgeService : Service() {
 
     // Recognition problems used to show only on the records/translation screens: the app log is where testers look.
     private var loggedConversation = ""
+    private var loggedRunning = ""
     private var loggedTranslator = ""
     private fun conversationChanged() {
         if (initialized) {
             val state = conversations.state
+            // Record start and end are logged too: a device log must show which record was running when.
+            val running = if (state.running) "${state.source.title}${if (state.stopping) " 종료 중" else ""}" else ""
+            if (running != loggedRunning) { onLog(if (running.isEmpty()) "기록 끝: ${loggedRunning.removeSuffix(" 종료 중")}" else "기록 진행: $running"); loggedRunning = running }
             val line = state.error?.let { "기록 오류: $it" }
                 ?: state.status.takeIf { it.isNotBlank() && PROBLEM.containsMatchIn(it) }?.let { "기록 상태: $it" } ?: ""
             if (line.isNotEmpty() && line != loggedConversation) onLog(line)
