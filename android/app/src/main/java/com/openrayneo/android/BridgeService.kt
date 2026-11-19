@@ -203,7 +203,7 @@ internal class BridgeService : Service() {
                     conversations.stop(); voiceTransport.disconnected(); voiceAudio.stop()
                     requests.disconnected(); deviceSettings.disconnected(); content.disconnected(); teleprompter.disconnected()
                 }
-                if (previous.link.phase != LinkPhase.FULL && state.link.phase == LinkPhase.FULL) { content.connected(); runCatching { deviceSettings.refresh() } }
+                if (previous.link.phase != LinkPhase.FULL && state.link.phase == LinkPhase.FULL) { content.connected(); teleprompter.connected(); runCatching { deviceSettings.refresh() } }
                 if (previous.session != null && state.session == null && previous.session.mode == PageMode.PROMPT && conversations.state.running && conversations.state.source == ConversationSource.REALTIME && conversationOwnsDisplay &&
                     (state.ownership != DisplayOwnership.APP || state.intent == DisplayIntent.Idle || state.intent == DisplayIntent.Navigation || state.error != null)) {
                     conversationOwnsDisplay = false; conversations.stop()

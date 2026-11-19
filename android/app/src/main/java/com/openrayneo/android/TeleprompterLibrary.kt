@@ -18,18 +18,112 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
     private val folder = File(context.filesDir, "scripts").apply { mkdirs() }
     @Volatile var state = TeleprompterState(documents = folder.listFiles().orEmpty().filter { it.extension == "json" }.map { JSONObject(it.readText()) }); private set
     private val messages = LinkedBlockingQueue<Pair<Int, JSONObject>>(64)
+    /** Requests the glasses send on their own (action 1), e.g. "start reading" after they picked a script. */
+    private val glassesRequests = LinkedBlockingQueue<Pair<Int, JSONObject>>(16)
+    @Volatile private var linked = false
+    @Volatile private var lastSpeed = 2
     private val transfer = LinkedBlockingQueue<WireFields.Value>(64)
     @Volatile private var task: String? = null
     @Volatile private var disconnected = false
     private var sequence = 0x5300
-    fun save(title: String, text: String, id: String = UUID.randomUUID().toString()): String {
+    fun save(title: String, text: String, id: String = UUID.randomUUID().toString(), refresh: Boolean = true): String {
         require(title.isNotBlank() && text.isNotBlank()); require(id.matches(Regex("[A-Za-z0-9-]{1,80}")))
         val document = JSONObject().put("did", id).put("title", title).put("text", text).put("updated", System.currentTimeMillis())
         val file = android.util.AtomicFile(File(folder, "$id.json")); val out = file.startWrite()
         try { out.write(document.toString().toByteArray(Charsets.UTF_8)); file.finishWrite(out) }
         catch (error: Exception) { file.failWrite(out); throw error }
-        state = state.copy(documents = listOf(document) + state.documents.filter { it.getString("did") != id }); changed(); return id
+        state = state.copy(documents = listOf(document) + state.documents.filter { it.getString("did") != id }); changed()
+        if (refresh) refreshGlasses()
+        return id
     }
+
+    /** Text files (name, already read bytes) become scripts titled by the file name; all are checked before any is saved. */
+    fun import(files: List<Pair<String, ByteArray>>): Int {
+        val scripts = files.map { (name, bytes) ->
+            val text = decode(bytes).replace("\r\n", "\n").replace('\r', '\n').trim()
+            require(text.isNotEmpty()) { "$name: 빈 파일" }
+            name.substringBeforeLast('.').ifBlank { name }.take(80) to text
+        }
+        scripts.forEach { (title, text) -> save(title, text, refresh = false) }
+        refreshGlasses()
+        return scripts.size
+    }
+
+    /** UTF-8 (with or without BOM) first; Korean Windows text files are often CP949. */
+    private fun decode(bytes: ByteArray): String {
+        val strict = Charsets.UTF_8.newDecoder()
+            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT).onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+        return runCatching { strict.decode(java.nio.ByteBuffer.wrap(bytes)).toString() }
+            .getOrElse { String(bytes, charset("MS949")) }.removePrefix("\uFEFF")
+    }
+
+    fun connected() { linked = true; refreshGlasses() }
+
+    /** The glasses' own teleprompter menu lists only what the phone sent; push the whole library. */
+    private fun refreshGlasses() {
+        if (!linked) return
+        requests.perform({ syncList() }) { result -> result.exceptionOrNull()?.let { state = state.copy(notice = "안경 원고 목록 동기화 실패: ${it.message}"); changed() } }
+    }
+
+    private fun item(document: JSONObject): JSONObject {
+        val text = document.getString("text")
+        return JSONObject().put("did", document.getString("did")).put("pin", false).put("title", document.getString("title")).put("offset", 0)
+            .put("scroll", 2).put("total", text.toByteArray(Charsets.UTF_8).size).put("timestamp", document.optLong("updated") / 1000)
+            .put("preview", text.take(80)).put("timezone", ZonedDateTime.now().offset.totalSeconds)
+    }
+
+    /** List type 1 = full sync, sent in small chunks so each frame stays short. */
+    private fun syncList() {
+        val documents = state.documents
+        val chunks = documents.chunked(3).ifEmpty { listOf(emptyList()) }
+        chunks.forEachIndexed { index, chunk ->
+            send(1, JSONObject().put("action", 2).put("type", 1).put("total", documents.size)
+                .put("chunkinfo", JSONObject().put("chunkid", index + 1).put("total_items", documents.size).put("islast", index == chunks.lastIndex))
+                .put("items", JSONArray(chunk.map(::item))))
+        }
+    }
+
+    private fun settings(speed: Int) = JSONObject().put("countdown", 3).put("scroll", 2).put("speed", speed).put("gear", 1)
+        .put("depth", 1).put("size", 18).put("width", 492).put("leading", 4)
+
+    private fun checksum(content: ByteArray): String {
+        var value = 0x811c9dc5u
+        for (byte in content) value = (value xor (byte.toUInt() and 255u)) * 0x01000193u
+        return value.toString(16).padStart(8, '0')
+    }
+
+    /**
+     * The user picked a script in the glasses' teleprompter menu: answer with its length (code 1, or 5 if the phone
+     * no longer has it), send the body over the file channel, then confirm the glasses' "start reading" request.
+     */
+    private fun glassesOpen(id: String): JSONObject {
+        val document = state.documents.firstOrNull { it.getString("did") == id }
+        if (document == null) {
+            send(2, JSONObject().put("action", 2).put("did", id).put("code", 5))
+            refreshGlasses()
+            error("안경이 고른 원고가 휴대폰에 없어 목록을 다시 보냄")
+        }
+        val content = document.getString("text").toByteArray(Charsets.UTF_8)
+        val settings = settings(lastSpeed)
+        messages.clear(); transfer.clear(); disconnected = false
+        send(2, JSONObject(settings.toString()).put("action", 2).put("did", id).put("total", content.size)
+            .put("pageOffset", 0).put("highLightOffset", 0).put("code", 1))
+        state = state.copy(active = id, paused = true)
+        transferFile(id, content)
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+        while (true) {
+            check(!disconnected) { "안경 연결이 끊김" }
+            val remaining = deadline - System.nanoTime()
+            val (type, body) = glassesRequests.poll(remaining.coerceAtLeast(0), TimeUnit.NANOSECONDS)
+                ?: return JSONObject().put("did", id).put("message", "원고를 안경에 보냈습니다(재생 시작 요청은 받지 못함)")
+            if (type != 3 || body.optString("did") != id) continue
+            send(3, JSONObject(settings.toString()).put("action", 2).put("did", id).put("total", content.size)
+                .put("pageOffset", 0).put("highLightOffset", 0).put("code", 1).put("checksum", checksum(content)))
+            state = state.copy(active = id, paused = false)
+            return JSONObject().put("did", id).put("message", "안경에서 고른 원고 \"${document.getString("title")}\" 재생 중")
+        }
+    }
+
     fun observe(frame: ProtocolCodec.Frame) {
         if (frame.protocol == 0x11 && task != null) {
             WireFields.parse(frame.payload).firstOrNull()?.let { field ->
@@ -40,6 +134,15 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
         } else if (frame.protocol == 0x14) {
             val message = ProtocolCodec.message(frame.payload); val body = message.json?.let(::JSONObject) ?: return
             if (body.optInt("action") == 2) { if (!messages.offer(message.type to body)) { messages.poll(); messages.offer(message.type to body) } }
+            if (body.optInt("action") == 1) when (message.type) {
+                1 -> refreshGlasses()
+                2 -> body.optString("did").takeIf { it.isNotBlank() }?.let { id ->
+                    if (state.busy) return@let
+                    glassesRequests.clear()
+                    operation({ glassesOpen(id) }) {}
+                }
+                3 -> if (!glassesRequests.offer(message.type to body)) { glassesRequests.poll(); glassesRequests.offer(message.type to body) }
+            }
             if (body.optInt("action") == 1 && body.optString("did") == state.active && message.type == 6) {
                 state = state.copy(active = null, paused = false, notice = "안경이 프롬프터를 종료함"); changed()
             }
@@ -49,19 +152,29 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
     fun startText(title: String, text: String, speed: Int, completion: (Result<JSONObject>) -> Unit) = start(save(title, text), speed, completion)
     private fun play(id: String, speed: Int): JSONObject {
         require(speed in 1..10)
+        lastSpeed = speed
         val document = state.documents.first { it.getString("did") == id }
         val text = document.getString("text"); val content = text.toByteArray(Charsets.UTF_8)
         if (state.active != null) controlBlocking("stop")
         messages.clear(); transfer.clear(); disconnected = false
-        val settings = JSONObject().put("countdown", 3).put("scroll", 2).put("speed", speed).put("gear", 1)
-            .put("depth", 1).put("size", 18).put("width", 492).put("leading", 4)
-        val item = JSONObject().put("did", id).put("pin", false).put("title", document.getString("title")).put("offset", 0)
-            .put("scroll", 2).put("total", content.size).put("timestamp", System.currentTimeMillis() / 1000)
-            .put("preview", text.take(80)).put("timezone", ZonedDateTime.now().offset.totalSeconds)
+        val settings = settings(speed)
+        val item = item(document)
         send(1, JSONObject().put("action", 2).put("type", 3).put("total", state.documents.size)
             .put("chunkinfo", JSONObject().put("chunkid", 1).put("total_items", 1).put("islast", true)).put("items", JSONArray().put(item)))
         send(2, JSONObject(settings.toString()).put("action", 1).put("did", id).put("total", content.size).put("pageOffset", 0).put("highLightOffset", 0))
         state = state.copy(active = id, paused = true)
+        transferFile(id, content)
+        accepted(2, id)
+        Thread.sleep(350) // Firmware startup transition, measured on 1.0.5.12.
+        send(3, JSONObject(settings.toString()).put("action", 1).put("did", id).put("total", content.size)
+            .put("pageOffset", 0).put("highLightOffset", 0).put("code", 1).put("checksum", checksum(content)))
+        accepted(3, id)
+        state = state.copy(active = id, paused = false)
+        return JSONObject().put("did", id).put("accepted", true).put("message", "안경이 프롬프터 재생을 확인함")
+    }
+
+    /** Body transfer over the generic file channel: the glasses ask for ranges until they report the result. */
+    private fun transferFile(id: String, content: ByteArray) {
         val taskId = "task_2_${System.currentTimeMillis()}"; task = taskId
         try {
             // MD5 and FNV are required wire fields, matching the official protocol.
@@ -82,15 +195,6 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
                 val entry = WireFields.string(1, taskId) + WireFields.integer(2, number(2) ?: 0) + WireFields.integer(3, offset) + WireFields.integer(4, size) + WireFields.bytes(5, chunk)
                 requests.sendRaw(ProtocolCodec.frame(17, 0, WireFields.bytes(4, entry)))
             }
-            accepted(2, id)
-            Thread.sleep(350) // Firmware startup transition, measured on 1.0.5.12.
-            var checksum = 0x811c9dc5u
-            for (byte in content) checksum = (checksum xor (byte.toUInt() and 255u)) * 0x01000193u
-            send(3, JSONObject(settings.toString()).put("action", 1).put("did", id).put("total", content.size)
-                .put("pageOffset", 0).put("highLightOffset", 0).put("code", 1).put("checksum", checksum.toString(16).padStart(8, '0')))
-            accepted(3, id)
-            state = state.copy(active = id, paused = false)
-            return JSONObject().put("did", id).put("accepted", true).put("message", "안경이 프롬프터 재생을 확인함")
         } finally { task = null }
     }
     private fun accepted(type: Int, id: String) {
@@ -122,6 +226,6 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
         check(!state.busy) { "프롬프터 전송이 끝날 때까지 기다리세요" }; state = state.copy(busy = true, notice = "안경과 원고 동기화 중…"); changed()
         requests.perform(work) { result -> state = state.copy(busy = false, notice = result.fold({ it.optString("message").ifBlank { "기기에서 확인됨" } }, { it.message ?: "프롬프터 실패" })); changed(); completion(result) }
     }
-    fun disconnected() { disconnected = true; task = null; transfer.offer(WireFields.Value(6)); messages.offer(0 to JSONObject())
+    fun disconnected() { linked = false; disconnected = true; task = null; glassesRequests.offer(0 to JSONObject()); transfer.offer(WireFields.Value(6)); messages.offer(0 to JSONObject())
         state = state.copy(active = null, paused = false, notice = "안경 연결이 끊겼습니다. 원고는 휴대폰에 저장되어 있습니다"); changed() }
 }

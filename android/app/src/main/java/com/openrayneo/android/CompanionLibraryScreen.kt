@@ -4,6 +4,8 @@ package com.openrayneo.android
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -84,6 +86,27 @@ internal fun TeleprompterScreen(model: AppModel) {
     var savedText by rememberSaveable { mutableStateOf("") }
     var speed by rememberSaveable { mutableIntStateOf(2) }
     var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val context = LocalContext.current
+    // Plain text files (.txt, .md, ...) become scripts named after the file.
+    val importFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        val resolver = context.applicationContext.contentResolver
+        // Reading may download from a cloud provider: do it off the main thread, then save on main.
+        kotlin.concurrent.thread(name = "script-import") {
+            val read = runCatching {
+                uris.map { uri ->
+                    val name = resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "원고"
+                    val bytes = checkNotNull(resolver.openInputStream(uri)) { "$name: 파일을 열 수 없음" }.use { it.readNBytes(1_000_001) }
+                    require(bytes.size <= 1_000_000) { "$name: 1MB보다 큰 파일은 가져오지 않습니다" }
+                    name to bytes
+                }
+            }
+            androidx.core.content.ContextCompat.getMainExecutor(context).execute {
+                model.attempt { model.notice = "원고 ${model.service().teleprompter.import(read.getOrThrow())}개를 가져왔습니다" }
+            }
+        }
+    }
     fun load(id: String?, newTitle: String, newText: String) { selected = id; title = newTitle; text = newText; savedTitle = newTitle; savedText = newText }
     fun switchTo(id: String?, newTitle: String, newText: String) =
         if (title != savedTitle || text != savedText) pending = { load(id, newTitle, newText) } else load(id, newTitle, newText)
@@ -97,6 +120,8 @@ internal fun TeleprompterScreen(model: AppModel) {
         Text("프롬프터 원고함", style = MaterialTheme.typography.headlineSmall)
         Note("원고는 휴대폰에 저장되며 공식 클라우드를 사용하지 않습니다. 전송 시 현재 표시와 음성 수신을 중지한 뒤 안경으로 전송합니다.")
         Note(state.notice)
+        ToolOutlinedButton(onClick = { importFiles.launch(arrayOf("text/*")) }, enabled = !state.busy) { Text("텍스트 파일 가져오기") }
+        Note("휴대폰에 저장된 원고는 안경과 연결되면 안경의 프롬프터 목록에도 보내져, 안경 메뉴에서 바로 고를 수 있습니다.")
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (state.active != null) Row {
             TextButton(onClick = { model.attempt { model.service().teleprompter.control(if (state.paused) "resume" else "pause") {} } }, enabled = !state.busy) { Text(if (state.paused) "계속" else "일시정지") }
