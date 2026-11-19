@@ -20,6 +20,8 @@ import java.util.concurrent.TimeUnit
  * ("…" while pending). Long unbroken speech (a video, a lecture) rarely ends a sentence, so the partial
  * text is also cut into pieces at punctuation, after [CHUNK_MS] or at [CHUNK_CHARS] and translated as it goes.
  * Only the newest piece is translated, so the glasses never fall behind.
+ * Live captions ([captions] = true) reuse the same window and ASR without translation: the top line is the
+ * last finished sentence, the bottom line the speech in progress, using the user's own ASR engine and hints.
  * All callbacks are funnelled onto [main]; nothing is stored or added to records.
  */
 internal class LiveTranslator(
@@ -32,6 +34,7 @@ internal class LiveTranslator(
 ) {
     @Volatile var active = false; private set
     @Volatile var status = OFF; private set
+    @Volatile var captions = false; private set
 
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
@@ -53,7 +56,8 @@ internal class LiveTranslator(
     private var restartTask: Runnable? = null
 
     /** Throws with a user-facing message when ASR or the translation model is not configured. */
-    fun validate(settings: JSONObject) {
+    fun validate(settings: JSONObject, captions: Boolean = false) {
+        if (captions) { require(SpeechRounds.ready(context, settings)) { SpeechRounds.missing(settings) }; return }
         val speech = SpeechRounds.bilingual(context, settings)
         require(SpeechRounds.ready(context, speech)) { SpeechRounds.missing(speech) }
         require(MobileModelEndpoint.isConfigured(settings.optString("modelUrl"), settings.optString("modelName"), settings.optString("modelKey"))) {
@@ -63,17 +67,19 @@ internal class LiveTranslator(
     }
 
     /** Must be called on the main thread. */
-    fun start(settings: JSONObject) {
-        validate(settings)
+    fun start(settings: JSONObject, captions: Boolean = false) {
+        validate(settings, captions)
         stop()
         synchronized(this) {
-            config = JSONObject(SpeechRounds.bilingual(context, settings).toString()).put("asrLanguage", "ko,en")
+            this.captions = captions
+            config = if (captions) JSONObject(settings.toString())
+                else JSONObject(SpeechRounds.bilingual(context, settings).toString()).put("asrLanguage", "ko,en")
             generation++
             active = true
             resampler = ConversationAudio()
         }
         history.clear(); latestFinal = 0; sourceLine = ""; targetLine = ""; failures = 0; committed = ""; pieceAt = 0L
-        status = LISTENING
+        status = listening()
         openASR()
         changed()
     }
@@ -135,7 +141,7 @@ internal class LiveTranslator(
         // A normal end (null) just reopens; errors back off and give up after repeated failures without speech.
         if (message != null) failures++
         if (failures >= MAX_FAILURES) {
-            stop("ASR 연결 실패로 번역을 멈췄습니다: $message")
+            stop("ASR 연결 실패로 ${if (captions) "자막" else "번역"}을 멈췄습니다: $message")
             gaveUp()
             return
         }
@@ -147,14 +153,16 @@ internal class LiveTranslator(
     }
 
     private fun heard() {
-        if (failures != 0 || status != LISTENING) { failures = 0; status = LISTENING; changed() }
+        if (failures != 0 || status != listening()) { failures = 0; status = listening(); changed() }
     }
 
-    private fun render() = show(clip(sourceLine, SOURCE_LIMIT), targetLine)
+    private fun listening() = if (captions) CAPTIONS_LISTENING else LISTENING
+    private fun render() = show(clip(sourceLine, SOURCE_LIMIT), if (captions) clip(targetLine, TARGET_LIMIT) else targetLine)
 
     private fun interim(token: Int, text: String) {
         if (token != generation || !active || misheard(text)) return
         heard()
+        if (captions) { targetLine = text; render(); return }
         sourceLine = text
         render()
         // The recognizer rewrote text that was already sent: keep only the part that still matches.
@@ -181,6 +189,7 @@ internal class LiveTranslator(
         heard()
         // Neither Korean nor English (typically noise or Korean misread as Chinese): never show or translate it.
         if (misheard(text)) { committed = ""; pieceAt = 0L; return }
+        if (captions) { sourceLine = text; targetLine = ""; render(); return }
         // Pieces of this sentence were already translated from the partial text; translate only what is left.
         // If the final rewrote those words (e.g. filler removal), translate it whole rather than lose words.
         val rest = if (committed.isNotEmpty() && text.startsWith(committed)) text.drop(committed.length).trim() else text
@@ -243,6 +252,7 @@ internal class LiveTranslator(
     companion object {
         private const val OFF = "실시간 번역 꺼짐"
         private const val LISTENING = "듣는 중 · 한국어 ↔ 영어"
+        private const val CAPTIONS_LISTENING = "듣는 중 · 실시간 자막"
         private const val MAX_FAILURES = 5
         private const val SOURCE_LIMIT = 80
         private const val TARGET_LIMIT = 120

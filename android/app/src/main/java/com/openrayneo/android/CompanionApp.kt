@@ -318,15 +318,23 @@ private fun GlassesScreen(
                         }
                     }
                     if (!model.state.translationActive)
-                        ToolOutlinedButton(
-                            onClick = { model.attempt { model.service().startTranslation() } }
-                        ) {
-                            Text("실시간 번역 (한국어 ↔ 영어)")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ToolOutlinedButton(
+                                onClick = { model.attempt { model.service().startTranslation() } }
+                            ) {
+                                Text("실시간 번역 (한↔영)")
+                            }
+                            ToolOutlinedButton(
+                                onClick = { model.attempt { model.service().startCaptions() } }
+                            ) {
+                                Text("실시간 자막")
+                            }
                         }
                     if (model.state.translationActive) {
-                        Note("실시간 번역 (한국어 ↔ 영어): ${model.state.translationStatus}")
+                        val captions = model.state.translationCaptions
+                        Note("${if (captions) "실시간 자막" else "실시간 번역 (한국어 ↔ 영어)"}: ${model.state.translationStatus}")
                         TextButton(onClick = { model.attempt { model.service().stopTranslation() } }) {
-                            Text("번역 종료")
+                            Text(if (captions) "자막 종료" else "번역 종료")
                         }
                     } else if (model.state.translationStatus != "실시간 번역 꺼짐") Note(model.state.translationStatus)
                     if (state.session?.mode == PageMode.PROMPT && state.session.phase == PagePhase.READY)

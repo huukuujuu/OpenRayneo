@@ -152,7 +152,8 @@ internal class BridgeService : Service() {
             { task, delay -> main.postDelayed(task, delay) }, { main.removeCallbacks(it) }, ::onLog,
             { id, signal -> dispatch(GlassesEvent.SessionSignal(id, signal)) },
             { id, packet -> if (audioOwner == id && state.session?.id == id) audio.accept(packet) },
-            { dispatch(GlassesEvent.ExternalPage(it)) })
+            { dispatch(GlassesEvent.ExternalPage(it)) },
+            { protocol, type, _ -> if (protocol == 0x13 && type == 1) main.post(::glassesCaptionRequest) })
         navigation.initialize(this)
         navigation.stop()
         navigation.observers.add(navigationObserver)
@@ -417,14 +418,31 @@ internal class BridgeService : Service() {
         } else if (state.link.phase == LinkPhase.FULL && !state.disconnecting) connection.sendNotification("어시스턴트", answer)
     }
     fun pausePrompt() { conversations.stop(); dispatch(GlassesEvent.PauseDisplay) }
-    fun startTranslation() {
+    fun startTranslation(captions: Boolean = false) {
         check(state.link.phase == LinkPhase.FULL && !state.disconnecting) { "먼저 안경을 완전히 연결하세요" }
         val config = settings.read()
-        translator.validate(config)
+        translator.validate(config, captions)
         conversationOwnsDisplay = false
         if (conversations.state.running) conversations.stop()
-        translator.start(config)
-        dispatch(GlassesEvent.StartTranslation)
+        translator.start(config, captions)
+        dispatch(GlassesEvent.StartTranslation(captions))
+    }
+    /** Live captions: the glasses' own caption feature needs the phone to recognise speech, so the app runs it here. */
+    fun startCaptions() = startTranslation(captions = true)
+    /** The glasses menu asked for Live captions (caption start request outside any app session). */
+    private fun glassesCaptionRequest() {
+        if (translator.active && translator.captions) return
+        // The meaning of this frame is not confirmed on a device yet: never let it end something the user started.
+        val busy = when {
+            conversations.state.running -> "기록(${conversations.state.source.title}) 실행 중"
+            translator.active -> "실시간 번역 실행 중"
+            state.intent != DisplayIntent.Idle && state.intent != DisplayIntent.PromptStandby -> "다른 안경 화면 표시 중"
+            else -> null
+        }
+        if (busy != null) { onLog("안경의 실시간 자막 요청을 받았지만 $busy 이라 시작하지 않음"); return }
+        runCatching { startCaptions() }
+            .onSuccess { onLog("안경 메뉴의 실시간 자막 요청 → 앱 실시간 자막 시작") }
+            .onFailure { onLog("안경의 실시간 자막 요청을 처리하지 못함: ${it.message}") }
     }
     fun stopTranslation() { translator.stop(); if (state.intent == DisplayIntent.Translation) dispatch(GlassesEvent.PauseDisplay) }
     fun openStandby() = dispatch(GlassesEvent.OpenStandby)

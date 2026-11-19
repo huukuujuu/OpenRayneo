@@ -38,6 +38,8 @@ internal data class GlassesState(
     val audio: AudioState = AudioState(),
     val answer: AnswerContent? = null,
     val translation: TranslationView = TranslationView(),
+    /** The translation window currently shows live captions instead of a translation. */
+    val captions: Boolean = false,
     /** Live caption on the realtime-hint standby page: last heard sentence and a status line. */
     val standby: TranslationView = TranslationView(),
     val revision: Long = 0,
@@ -63,7 +65,7 @@ internal data class GlassesState(
         session.mode == PageMode.NAVIGATION -> "내비게이션 세션 준비됨"
         intent == DisplayIntent.BlankPrompt -> "화면을 지웠고 음성 수신은 유지됨"
         intent is DisplayIntent.Answer -> "답변 세션 준비됨"
-        intent == DisplayIntent.Translation -> "실시간 번역 세션 준비됨"
+        intent == DisplayIntent.Translation -> if (captions) "실시간 자막 세션 준비됨" else "실시간 번역 세션 준비됨"
         else -> "실시간 힌트 세션 준비됨"
     }
 }
@@ -84,7 +86,8 @@ internal sealed interface GlassesEvent {
     data object StopNavigation : GlassesEvent
     data object PauseDisplay : GlassesEvent
     data object OpenStandby : GlassesEvent
-    data object StartTranslation : GlassesEvent
+    /** [captions] = live captions (speech only, no translation) on the same window. */
+    data class StartTranslation(val captions: Boolean = false) : GlassesEvent
     data class TranslationText(val view: TranslationView) : GlassesEvent
     data class StandbyText(val view: TranslationView) : GlassesEvent
     data object ClearDisplay : GlassesEvent

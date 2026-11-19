@@ -14,7 +14,13 @@ internal class GlassesDisplay(
     private val signal: (Long, PageSignal) -> Unit,
     private val onAudio: (Long, ByteArray) -> Unit,
     private val externalPage: (String) -> Unit,
+    /** A caption/prompt frame that is not part of our session, e.g. the glasses menu opening Live captions. */
+    private val foreign: (protocol: Int, type: Int, body: JSONObject?) -> Unit,
 ) {
+    // BLE frames arrive on the GATT thread, SPP frames on main.
+    private val foreignSeen = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    /** Sessions we closed recently: their late replies are ours, not the glasses opening something. */
+    private val closedSids = java.util.concurrent.ConcurrentLinkedDeque<String>()
     private var session: PageSession? = null
     private var sid: String? = null
     private var generation = 0
@@ -64,6 +70,23 @@ internal class GlassesDisplay(
                 (message.type in setOf(2, 3, 5, 8) && !json?.optString("did").isNullOrBlank() && json?.optInt("code", 1) == 1)
             if (activity) externalPage("안경 프롬프터 활동이 감지되어 표시를 양보함")
             return
+        }
+        if ((frame.protocol == 0x13 || frame.protocol == 0x17) && !frame.acknowledgement) {
+            val message = ProtocolCodec.message(frame.payload)
+            if (message.type != 4) {
+                val body = runCatching { message.json?.let(::JSONObject) }.getOrNull()
+                val current = session
+                val frameSid = body?.optString("sid").orEmpty()
+                val ours = current != null && sid != null && frame.protocol == protocol(current.mode) && frameSid == sid ||
+                    frameSid.isNotEmpty() && frameSid in closedSids
+                if (!ours) {
+                    // The first frames of each kind go to the log: the glasses-menu flow is not captured anywhere yet.
+                    val key = "${frame.protocol}:${message.type}"
+                    val count = foreignSeen.merge(key, 1, Int::plus) ?: 1
+                    if (count <= 5) report("안경 쪽 화면 신호 수신: 0x${frame.protocol.toString(16)} type=${message.type} ${message.json.orEmpty().take(200)}")
+                    foreign(frame.protocol, message.type, body)
+                }
+            }
         }
         val active = session ?: return
         val receivingGeneration = generation
@@ -178,6 +201,7 @@ internal class GlassesDisplay(
     fun reset() {
         generation++
         cancel(timeout); cancel(settle)
+        sid?.let { closedSids.addLast(it); while (closedSids.size > 8) closedSids.pollFirst() }
         session = null; sid = null; audioAccepted = false; accepted = false; settled = false; writing = false; failed = false
         navigationFrameSent = false; pending = null; lastWritten = null
         recentAudioSequences.clear(); audioReported = false; unmatchedAudioReported = false
