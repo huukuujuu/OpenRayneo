@@ -29,7 +29,12 @@ import kotlinx.coroutines.delay
 @Composable
 internal fun CompanionApp(model: AppModel, actions: UiActions) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var route by rememberSaveable { mutableStateOf("") }
+    // Sub-screens opened on top of the tabs, newest last: back returns to where each one was opened from.
+    var saved by rememberSaveable { mutableStateOf("") }   // routes joined by '/', saved as plain text
+    val stack = saved.split('/').filter { it.isNotEmpty() }
+    val route = stack.lastOrNull().orEmpty()
+    val open: (String) -> Unit = { next -> saved = (stack.filter { it != next } + next).joinToString("/") }
+    val back: () -> Unit = { saved = stack.dropLast(1).joinToString("/") }
     var devices by rememberSaveable { mutableStateOf(false) }
     var sources by rememberSaveable { mutableStateOf(false) }
     val snackbars = remember { SnackbarHostState() }
@@ -40,14 +45,11 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
         enabled =
             !devices &&
                 !sources &&
-                (route.isNotEmpty() || model.onboarding && model.onboardingStep > 0 || tab != 0)
+                (route.isNotEmpty() || model.onboarding && (model.onboardingStep > 0 || model.setupReplay) || tab != 0)
     ) {
-        if (route.isNotEmpty())
-            route =
-                if (route in listOf("model", "computer", "diagnostics", "voice-settings", "voice-profiles", "device-settings", "content", "teleprompter", "agent-api") && !model.onboarding)
-                    "settings"
-                else ""
-        else if (model.onboarding) model.step(model.onboardingStep - 1) else tab = 0
+        if (route.isNotEmpty()) back()
+        else if (model.onboarding) { if (model.onboardingStep > 0) model.step(model.onboardingStep - 1) else model.finishSetup() }
+        else tab = 0
     }
     LaunchedEffect(model.notice) {
         val message = model.notice ?: return@LaunchedEffect
@@ -62,15 +64,15 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                         Text(
                             when (route) {
                                 "settings" -> "설정"
-                                "model" -> "휴대폰 모델"
+                                "model" -> "요약·대화 모델"
                                 "computer" -> "컴퓨터 연결"
                                 "diagnostics" -> "기기 및 진단"
-                                "voice-settings" -> "음성 및 프롬프트"
+                                "voice-settings" -> "음성 설정"
                                 "voice-profiles" -> "목소리 및 인물"
                                 "device-settings" -> "안경 설정"
                                 "content" -> "홈 화면 및 콘텐츠"
                                 "teleprompter" -> "프롬프터 자료"
-                                "agent-api" -> "DSH Go 및 외부 Agent"
+                                "agent-api" -> "DSH Go 연결"
                                 else -> listOf("OpenRayneo", "내비게이션", "어시스턴트", "기록")[tab]
                             }
                         )
@@ -78,11 +80,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                     navigationIcon = {
                         if (route.isNotEmpty())
                             IconButton(
-                                onClick = {
-                                    route =
-                                        if (route == "settings" || model.onboarding) ""
-                                        else "settings"
-                                }
+                                onClick = back
                             ) {
                                 Icon(Icons.AutoMirrored.Outlined.ArrowBack, "뒤로")
                             }
@@ -90,7 +88,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                     actions = {
                         if (route.isEmpty()) {
                             if (s.glasses.link.phase == LinkPhase.FULL) StatusPill("안경 연결됨")
-                            IconButton(onClick = { route = "settings" }) {
+                            IconButton(onClick = { open("settings") }) {
                                 Icon(Icons.Outlined.Settings, "설정")
                             }
                         }
@@ -143,10 +141,10 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                     SettingsScreen(
                         model,
                         actions,
-                        { route = it },
+                        open,
                         {
                             model.replaySetup()
-                            route = ""
+                            saved = ""
                         },
                     )
                 "model",
@@ -160,7 +158,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                 "agent-api" -> AgentServerScreen(model, actions.bluetoothPermission)
                 else ->
                     if (model.onboarding)
-                        OnboardingScreen(model, actions, { devices = true }, { route = it })
+                        OnboardingScreen(model, actions, { devices = true }, open)
                     else
                         pages.SaveableStateProvider(tab) {
                             when (tab) {
@@ -169,8 +167,8 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                                         model,
                                         { devices = true },
                                         { tab = it },
-                                        { route = "device-settings" },
-                                        { route = it },
+                                        { open("device-settings") },
+                                        open,
                                     )
                                 1 ->
                                     NavigationScreen(
@@ -179,8 +177,8 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                                         { sources = true },
                                         { devices = true },
                                     )
-                                2 -> AssistantScreen(model, actions, { route = it })
-                                else -> ConversationScreen(model, actions, { route = it })
+                                2 -> AssistantScreen(model, actions, open)
+                                else -> ConversationScreen(model, actions, open)
                             }
                         }
             }
@@ -286,8 +284,7 @@ private fun GlassesScreen(
                     ) {
                         Text(if (state.disconnecting) "연결 해제 중…" else "연결 해제")
                     }
-                    Note("연결을 해제하면 표시와 음성 수신이 끝나고 자동 재연결이 중지되며 페어링 기록은 유지됩니다. 이후 다른 기기로 연결을 전환할 수 있습니다.")
-                }
+                                    }
             }
         }
         item {
@@ -337,7 +334,6 @@ private fun GlassesScreen(
                             Text(if (captions) "자막 종료" else "번역 종료")
                         }
                     } else if (model.state.translationStatus != "실시간 번역 꺼짐") Note(model.state.translationStatus)
-                    VirtualVoicePanel(model)
                     if (state.session?.mode == PageMode.PROMPT && state.session.phase == PagePhase.READY)
                         TextButton(onClick = { model.attempt { model.service().clearDisplay() } }) {
                             Text("화면 지우기 (음성 수신 유지)")
@@ -582,9 +578,9 @@ private fun NavigationScreen(
                         onClick = { model.attempt { model.service().stopNavigation() } },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("안경 추종 중지")
+                        Text("안경에 띄우기 중지")
                     }
-                    Note("안경 추종만 중지되고 Amap 내비게이션은 계속 실행됩니다.")
+                    Note("안경 표시만 멈추고 Amap 내비게이션은 계속됩니다.")
                 }
             }
         }
@@ -616,7 +612,7 @@ private fun NavigationScreen(
             ) {
                 Text("알림 읽기 복구")
             }
-            Note("알림 권한과 추종 선택을 유지한 채 리스너를 다시 연결하고 현재 알림을 읽습니다.")
+            Note("알림을 다시 읽어 옵니다. 고른 알림과 권한은 그대로입니다.")
             Note("위의 안경 화면은 전송 결과에 따라서만 갱신되며 Amap 알림은 따로 표시됩니다. 종료되거나 연결이 끊기면 이전 화면을 현재 화면으로 간주하지 않습니다.")
         }
     }

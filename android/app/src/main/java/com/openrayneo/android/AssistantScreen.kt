@@ -161,7 +161,7 @@ internal fun AssistantScreen(model: AppModel, actions: UiActions, configure: (St
                             tint = MaterialTheme.colorScheme.primary,
                         )
                         Text("새 대화", style = MaterialTheme.typography.headlineSmall)
-                        Note(if (mobile) "이렇게 물어보세요: 지금 안경의 내비게이션 추종 상태는 어때?" else "작업을 입력하면 컴퓨터의 Codex가 처리합니다.")
+                        Note(if (mobile) "예: 내일 오전 일정 알려줘" else "작업을 입력하면 컴퓨터의 Codex가 처리합니다.")
                     }
                 }
             history.forEach { record -> item { ConversationTurn(record.question, record.answer) } }
@@ -279,11 +279,6 @@ internal fun AssistantScreen(model: AppModel, actions: UiActions, configure: (St
                         Spacer(Modifier.width(4.dp))
                         Text("휴대폰 음성 입력", style = MaterialTheme.typography.labelMedium)
                     }
-                    Text(
-                        if (mobile) "로컬 Agent로 보내기" else "컴퓨터 Codex로 보내기",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
             }
         }

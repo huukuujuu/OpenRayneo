@@ -195,6 +195,8 @@ internal class BridgeService : Service() {
             if (on) bargeMeter.arm(cfg.optString("bargeInLevelDb").toDoubleOrNull() ?: -30.0, cfg.optString("bargeInMinMs").toIntOrNull() ?: 250)
             else { bargeMeter.disarm(); onLog("대화 끊기 진단: 답변 중 마이크 최대 ${bargeMeter.peakDb.toInt()} dBFS (감지 기준 ${cfg.optString("bargeInLevelDb").ifBlank { "-30" }} dBFS)") }
         }
+        voiceTransport.idleCloseSeconds = { cachedSettings().optString("nativeIdleCloseSeconds").toIntOrNull() ?: DEFAULT_NATIVE_IDLE_CLOSE_SECONDS }
+        voiceTransport.answersWakes = { cachedSettings().optBoolean("nativeAutoAnswer") }
         voiceTransport.bargeIn = { deviceSettings.state.settings.optJSONObject("voiceAssistantConfig")?.deviceFlag("workMode") == true &&
             settings.read().optBoolean("nativeAutoAnswer") && conversations.state.running && conversations.state.source == ConversationSource.NATIVE }
         translator = LiveTranslator(this, main, { source, target, finals, final -> dispatch(GlassesEvent.TranslationText(TranslationView(source, target, finals, final))) }, ::translatorChanged) {
@@ -286,7 +288,7 @@ internal class BridgeService : Service() {
                 updateAnswerClearTimer()
                 updateStandbyAnswerTimer()
                 if (resumeAlwaysOn != null && previous.intent != DisplayIntent.Idle && state.intent == DisplayIntent.Idle) main.post(::resumeBackground)
-                if (state.displayDescription != previous.displayDescription) onLog(state.displayDescription)
+                if (state.displayDescription != previous.displayDescription && state.displayDescription != state.link.detail) onLog(state.displayDescription)
                 transition.effects.forEach { effect ->
                     runCatching { execute(effect) }.onFailure { error ->
                         val message = error.message ?: "안경 작업 실패"
@@ -821,6 +823,13 @@ internal class BridgeService : Service() {
                 else content.execute(name, args, completion)
         }
     }
+    // Settings are an AES-GCM decrypt; the voice path asks on every partial transcript, so keep them for a moment.
+    @Volatile private var settingsCache: Pair<Long, JSONObject>? = null
+    private fun cachedSettings(): JSONObject {
+        val now = android.os.SystemClock.elapsedRealtime()
+        settingsCache?.takeIf { now - it.first < 2_000 }?.let { return it.second }
+        return settings.read().also { settingsCache = now to it }
+    }
     private fun onLog(text: String) {
         android.util.Log.i("OpenRayneo", text)
         logFile.append(text)
@@ -938,6 +947,8 @@ internal class BridgeService : Service() {
 }
 
 internal const val DEFAULT_ANSWER_MAX_CHARS = 60
+/** Seconds of silence before the wake assistant popup on the glasses is closed (setting nativeIdleCloseSeconds). */
+internal const val DEFAULT_NATIVE_IDLE_CLOSE_SECONDS = 15
 private const val ANSWER_PAGE_MS = 7_000L
 private const val REALTIME_ANSWER_HOLD_SECONDS = 15
 private const val STALE_PARTIAL_MS = 10_000L

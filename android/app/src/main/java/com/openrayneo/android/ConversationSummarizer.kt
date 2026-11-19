@@ -18,10 +18,10 @@ internal class ConversationSummarizer {
         val body = JSONObject().put("model", config.getString("modelName")).put("stream", false)
             .put("messages", JSONArray().put(JSONObject().put("role", "system").put("content",
                 ConversationPrompts.render(config.optString("memoryPrompt"), ConversationPrompts.memory) +
-                    "\nJSON 반환: summary 문자열, memories 배열. 각 항목에는 source_ids 배열, subject, text, kind가 있고 subject_id는 선택. 각 항목은 반드시 기존 원문 문장 ID를 참조해야 함. 텍스트는 한국어로 작성."))
+                    "\nJSON 반환: summary 문자열, memories 배열. 각 항목에는 source_ids 배열, subject, text, kind가 있고 subject_id는 선택. 각 항목은 반드시 기존 원문 문장 ID를 참조해야 함. 텍스트는 한국어로 작성. speaker는 자동으로 붙인 목소리 구분일 뿐이라 같은 사람이 여러 라벨로 나뉠 수 있으니, 라벨 이름(A, B, 혼합 등)을 요약에 쓰지 말고 people에 있는 이름이나 '나', '상대방'처럼 쓴다. subject를 모르면 빈 문자열."))
                 .put(JSONObject().put("role", "user").put("content", JSONObject().put("mode", record.mode.name)
                     .put("people", JSONArray(people.map { JSONObject().put("id", it.id).put("name", it.name).put("self", it.self) }))
-                    .put("segments", JSONArray(record.segments.map { it.json() })).toString())))
+                    .put("segments", JSONArray(record.segments.map { it.json().put("speaker", speakerTag(it.speaker)) })).toString())))
         val request = Request.Builder().url(endpoint).apply {
             config.optString("modelKey").takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") }
         }.post(body.toString().toRequestBody("application/json".toMediaType())).build()
@@ -42,7 +42,7 @@ internal class ConversationSummarizer {
                 val speakerIds = ids.map { sources[it]?.personId }.distinct()
                 val subjectId = item.optString("subject_id").takeIf { id -> people.any { it.id == id } }
                 AttributedMemory(sourceIds = ids, speakerId = speakerIds.singleOrNull(), subjectId = subjectId,
-                    subject = item.getString("subject"), text = item.getString("text"), kind = item.optString("kind", "진술"))
+                    subject = item.optString("subject").takeUnless { it == "null" }.orEmpty(), text = item.getString("text"), kind = item.optString("kind", "진술"))
             }
             record.copy(memories = facts, summary = result.getString("summary"), summaryStale = false)
         }

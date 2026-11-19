@@ -11,13 +11,22 @@ import kotlin.math.sqrt
 /** All native inference runs on the conversation worker, never on the decoder or UI thread. */
 internal class SpeakerEngine(context: Context, private val people: () -> List<VoicePerson>,
     private val threshold: () -> Float, private val classified: (Long, Long) -> Unit) {
-    companion object { const val MODEL = "campplus-zh-16k-common/sherpa-2.0.1" }
+    companion object {
+        const val MODEL = "campplus-zh-16k-common/sherpa-2.0.1"
+        /** Cosine at which a turn joins an existing speaker label (was 0.6 on the best single sample: one talker split into A, B, C…). */
+        private const val SAME_SPEAKER = 0.5f
+        /** Shortest clean speech (0.5 s at 16 kHz) whose voiceprint may join a known label. */
+        private const val SHORT_SAMPLES = 8_000
+        /** Cosine for a self-matched turn to mark an existing label as the user's own. */
+        private const val SELF_CLAIM = 0.7f
+        private const val CLUSTER_SAMPLES = 12
+    }
     data class Evidence(val beginMS: Long, val endMS: Long, val speaker: String,
                         val personId: String?, val score: Float?, val mixed: Boolean, val embedding: FloatArray?)
     data class Assignment(val speaker: String = UNKNOWN_SPEAKER, val personId: String? = null,
                           val score: Float? = null, val stable: Boolean = false, val mixed: Boolean = false,
                           val candidates: List<VoiceMatch> = emptyList(), val reason: String = "아직 충분히 선명한 음성을 얻지 못함")
-    private data class Cluster(val label: String, val samples: MutableList<FloatArray>, var lastSeenMS: Long)
+    private data class Cluster(val label: String, val samples: MutableList<FloatArray>, var lastSeenMS: Long, var self: Boolean = false)
     private val extractor = SpeakerEmbeddingExtractor(context.assets,
         SpeakerEmbeddingExtractorConfig("voice-models/campplus-zh-16k.onnx", numThreads = 1))
     private val vad = Vad(context.assets, VadModelConfig(
@@ -27,7 +36,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
         segmentation = OfflineSpeakerSegmentationModelConfig(
             pyannote = OfflineSpeakerSegmentationPyannoteModelConfig("voice-models/segmentation.int8.onnx"), numThreads = 1),
         embedding = SpeakerEmbeddingExtractorConfig("voice-models/campplus-zh-16k.onnx", numThreads = 1),
-        clustering = FastClusteringConfig(threshold = 0.65f), minDurationOn = 0.25f, minDurationOff = 0.3f))
+        clustering = FastClusteringConfig(threshold = 0.8f), minDurationOn = 0.25f, minDurationOff = 0.3f))
     private var nextLabel = 0
     private var labelPrefix = ""
     private val clusters = mutableListOf<Cluster>()
@@ -102,7 +111,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
             intervals.map { it.speaker }.distinct().forEach { speaker ->
                 val clean = regions.filter { it.speakers == setOf(speaker) }
                 val count = clean.sumOf { it.last - it.first }
-                val vector = if (count >= 12_800) {
+                val vector = if (count >= SHORT_SAMPLES) {
                     val audio = FloatArray(count)
                     var position = 0
                     clean.forEach { region ->
@@ -111,9 +120,13 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
                     }
                     embedding(audio)
                 } else null
-                if (vector != null) vectors[speaker] = vector
-                labels[speaker] = vector?.let { cluster(it, end).label } ?: "${labelPrefix}짧은구간$begin-$speaker"
-                matches[speaker] = vector?.let(::person)
+                // Short turns give unreliable voiceprints: they may join a known voice but never start a new speaker.
+                val short = count < 12_800
+                val match = vector?.let(::person)
+                if (vector != null && !short) vectors[speaker] = vector
+                labels[speaker] = vector?.let { cluster(it, end, isSelf = !short && match?.first != null, create = !short)?.label }
+                    ?: UNKNOWN_SPEAKER
+                matches[speaker] = if (short) null else match
             }
             regions.forEach { region ->
                 val mixed = region.speakers.size > 1
@@ -148,15 +161,37 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
         val self = people().firstOrNull { it.self && it.mergedInto == null }?.id
         return matches.firstOrNull()?.let { accepted(matches)?.personId?.takeIf { id -> id == self } to it.score }
     }
-    private fun cluster(vector: FloatArray, endMS: Long): Cluster {
-        val nearest = clusters.map { cluster -> cluster to cluster.samples.maxOf { cosine(vector, it) } }.maxByOrNull { it.second }
-        if (nearest != null && nearest.second >= 0.6f) {
-            nearest.first.lastSeenMS = endMS
-            if (nearest.first.samples.size < 5) nearest.first.samples += vector
-            return nearest.first
+    /**
+     * Online speaker label within a record. One talker's turns vary a lot (short, noisy, Korean on a Chinese-trained
+     * model), so a turn joins the closest label by its best match or the label's average voice. A turn matching the
+     * enrolled self voice joins the self label. [create] false (short turns) only joins an existing label.
+     */
+    private fun cluster(vector: FloatArray, endMS: Long, isSelf: Boolean = false, create: Boolean = true): Cluster? {
+        val selfCluster = if (isSelf) clusters.firstOrNull { it.self } else null
+        val nearest = selfCluster?.let { it to 1f } ?: clusters.map { cluster ->
+            cluster to maxOf(cluster.samples.maxOf { cosine(vector, it) }, cosine(vector, centroid(cluster.samples)))
+        }.maxByOrNull { it.second }
+        // The first self-matched turn only claims an existing label that clearly is the same voice; else it starts its own.
+        val needed = if (isSelf && selfCluster == null) SELF_CLAIM else SAME_SPEAKER
+        if (nearest != null && nearest.second >= needed) {
+            val chosen = nearest.first
+            chosen.lastSeenMS = endMS
+            if (isSelf) chosen.self = true
+            if (create) { chosen.samples += vector; if (chosen.samples.size > CLUSTER_SAMPLES) chosen.samples.removeAt(1) }
+            return chosen
         }
+        if (!create) return null
         val count = nextLabel++
-        return Cluster(labelPrefix + if (count < 26) ('A'.code + count).toChar().toString() else "S${count + 1}", mutableListOf(vector), endMS).also { clusters += it }
+        return Cluster(labelPrefix + if (count < 26) ('A'.code + count).toChar().toString() else "S${count + 1}", mutableListOf(vector), endMS, isSelf).also { clusters += it }
+    }
+    private fun centroid(samples: List<FloatArray>): FloatArray {
+        val sum = FloatArray(samples[0].size)
+        samples.forEach { sample ->
+            var norm = 0.0; sample.forEach { norm += it * it }
+            val scale = (1 / sqrt(norm).coerceAtLeast(1e-12)).toFloat()
+            for (i in sum.indices) sum[i] += sample[i] * scale
+        }
+        return sum
     }
     fun assignment(beginMS: Long, endMS: Long, wordLevel: Boolean = false): Assignment {
         val covered = evidence.filter { min(it.endMS, endMS) > max(it.beginMS, beginMS) }

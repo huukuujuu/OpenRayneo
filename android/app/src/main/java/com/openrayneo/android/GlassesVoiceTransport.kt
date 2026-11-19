@@ -45,6 +45,37 @@ internal class GlassesVoiceTransport(
     private var acceptedWake: String? = null
     /** Question audio that arrived while that handoff was still running; replayed when native capture starts. */
     private val earlyAudio = ArrayDeque<ByteArray>()
+    /** Setting "wake conversation auto close" in seconds; 0 keeps the glasses' assistant open until they close it. */
+    var idleCloseSeconds: () -> Int = { 0 }
+    /** Whether this app answers wakes (auto answer on): otherwise the glasses' popup is not ours to close. */
+    var answersWakes: () -> Boolean = { false }
+    private var idleTask: Runnable? = null
+
+    /**
+     * (Re)start the idle close: when nothing is said for [idleCloseSeconds] while the assistant listens or presents
+     * an answer, stop capture and send phone_exit (0x0d type 7) so the glasses close their assistant popup.
+     * Cancelled while an answer is being prepared (after the final transcript) and when the session ends.
+     */
+    @Synchronized private fun armIdle(atLeast: Int = 0, extra: Int = 0) {
+        disarmIdle()
+        if (!nativeActive || !answersWakes()) return
+        val setting = idleCloseSeconds().coerceIn(0, 3600)
+        if (setting == 0) return
+        val seconds = maxOf(setting, atLeast) + extra
+        val wake = wakeId
+        idleTask = Runnable {
+            synchronized(this) {
+                idleTask = null
+                if (!nativeActive || wakeId != wake) return@synchronized
+                trace("깨우기 대화: ${seconds}초 동안 말이 없어 안경 어시스턴트 닫음")
+                send(0x0d, 2, JSONObject().put("rc", 2))
+                send(0x0d, 7, JSONObject().put("rc", 0))
+                nativeActive = false; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false
+                if (source == ConversationSource.NATIVE) endRound(true)
+            }
+        }.also { main.postDelayed(it, seconds * 1000L) }
+    }
+    @Synchronized private fun disarmIdle() { idleTask?.let(main::removeCallbacks); idleTask = null }
 
     /**
      * Answer a wake at once although another capture (always-on) still owns the audio: the glasses start
@@ -121,12 +152,13 @@ internal class GlassesVoiceTransport(
     }
     @Synchronized fun stop() {
         val previous = source; source = null; lifeTask = null
+        if (previous == ConversationSource.NATIVE) disarmIdle()
         acceptedWake = null; earlyAudio.clear(); replaying = false
         if (previous == ConversationSource.NATIVE) send(0x0d, 2, JSONObject().put("rc", 2))
         if (previous == ConversationSource.ALWAYS_ON) send(0x0f, 20, JSONObject().put("cmd", "life_log_switch")
             .put("payload", JSONObject().put("value", 0).put("mode", 0).put("data", "")))
     }
-    @Synchronized fun disconnected() { source = null; nativeActive = false; wakeId = null; lifeTask = null; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false }
+    @Synchronized fun disconnected() { disarmIdle(); source = null; nativeActive = false; wakeId = null; lifeTask = null; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false }
     @Synchronized fun receive(frame: ProtocolCodec.Frame) {
         if (frame.protocol == 0x0f) {
             val message = ProtocolCodec.message(frame.payload); val body = message.json?.let(::JSONObject) ?: return
@@ -145,25 +177,27 @@ internal class GlassesVoiceTransport(
             1 -> {
                 nativeActive = true; nativeCode = body.optInt("rc"); wakeId = UUID.randomUUID().toString()
                 lastReply = null; advancedReply = null; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false
-                if (nativeCode in 1..6) wake()
+                disarmIdle()
+                if (nativeCode in 1..6) { wake(); armIdle(QUESTION_SECONDS) }
             }
             3 -> if (source == ConversationSource.NATIVE && !replaying) message.audio?.let(audio)
                 // Accepted early while always-on still stops (or its audio is being replayed): keep the order.
                 else if (nativeActive && (replaying || acceptedWake != null && acceptedWake == wakeId)) message.audio?.let {
                     earlyAudio.addLast(it); while (earlyAudio.size > EARLY_AUDIO_FRAMES) earlyAudio.removeFirst()
                 }
-            8 -> { nativeActive = false; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false; if (source == ConversationSource.NATIVE) endRound(true) }
+            8 -> { disarmIdle(); nativeActive = false; answering = false; acceptedWake = null; earlyAudio.clear(); replaying = false; if (source == ConversationSource.NATIVE) endRound(true) }
             11 -> if (answering && nativeActive) {
                 // The answer finished without an interruption; we are already listening for the next turn.
                 val sid = body.optString("sid")
                 if (sid.isBlank() || sid == lastReply) {
                     answering = false
                     send(0x0d, 2, JSONObject().put("rc", 1)); send(0x0d, 9, JSONObject().put("rc", 1))
+                    armIdle(QUESTION_SECONDS)
                 }
             } else if (nativeActive && lastReply != null && advancedReply != lastReply) {
                 val sid = body.optString("sid")
                 if (sid.isNotBlank() && sid != lastReply) return
-                advancedReply = lastReply; wakeId = UUID.randomUUID().toString(); wake()
+                advancedReply = lastReply; wakeId = UUID.randomUUID().toString(); wake(); armIdle(QUESTION_SECONDS)
             }
             161 -> if (source == ConversationSource.ALWAYS_ON) {
                 // A new round while ours is still open: the glasses dropped it (e.g. their voice memo paused LifeLog
@@ -203,18 +237,20 @@ internal class GlassesVoiceTransport(
             }
         }
     }
-    fun asr(text: String, expectedWake: String) {
+    @Synchronized fun asr(text: String, expectedWake: String) {
         if (text.isBlank() || !nativeActive || wakeId != expectedWake) return
         interrupt(text)
         finalSent = expectedWake
+        armIdle(ANSWER_WAIT_SECONDS)   // An answer is being prepared; the reply re-arms. Closes if it never comes.
         send(0x0d, 4, JSONObject().put("rc", 1))
         send(0x0d, 5, JSONObject().put("text", text).put("final", true))
         send(0x0d, 4, JSONObject().put("rc", 2)); send(0x0d, 9, JSONObject().put("rc", 3))
     }
     /** Live, still-changing transcript on the native assistant page, as the official app streams it. */
-    fun partial(text: String, expectedWake: String) {
+    @Synchronized fun partial(text: String, expectedWake: String) {
         if (text.isBlank() || !nativeActive || wakeId != expectedWake || finalSent == expectedWake) return
         interrupt(text)
+        armIdle(QUESTION_SECONDS)   // Still talking: count from now.
         send(0x0d, 5, JSONObject().put("text", text).put("final", false))
     }
     /** Sustained voice level on the mic while the answer is presented (no transcript needed): cut the answer now. */
@@ -234,7 +270,7 @@ internal class GlassesVoiceTransport(
         trace("대화 끊기: 답변 중 발화 감지")
         send(0x0d, 9, JSONObject().put("rc", 1))
     }
-    fun reply(text: String, query: String, expectedWake: String): Boolean {
+    @Synchronized fun reply(text: String, query: String, expectedWake: String): Boolean {
         if (!nativeActive || wakeId != expectedWake) return false
         val listen = bargeIn()
         // With barge-in, capture stays open through the answer instead of closing and waiting for type 11.
@@ -246,11 +282,16 @@ internal class GlassesVoiceTransport(
         lastReply = expectedWake.replace("-", "").lowercase()
         send(0x0d, 9, JSONObject().put("rc", 3)); send(0x0d, 32, body); send(0x0d, 12, JSONObject())
         val answered = lastReply
+        // The glasses still present (read out) the answer: count the silence after roughly its reading time.
+        val reading = text.length / READ_CHARS_PER_SECOND
+        armIdle(extra = reading)
         if (listen) {
             answerText = text
             main.post {
-                if (!nativeActive || lastReply != answered || advancedReply == answered) return@post
-                advancedReply = answered; answering = true; wakeId = UUID.randomUUID().toString(); wake()
+                synchronized(this) {
+                    if (!nativeActive || lastReply != answered || advancedReply == answered) return@synchronized
+                    advancedReply = answered; answering = true; wakeId = UUID.randomUUID().toString(); wake(); armIdle(extra = reading)
+                }
             }
             // Neither an interruption nor the glasses' next-turn request: close the mic instead of listening forever.
             main.postDelayed({
@@ -302,3 +343,9 @@ private const val EARLY_AUDIO_FRAMES = 1_000
 private const val REPLAY_SLICE = 100
 private const val REPLAY_SLICE_MS = 400L
 private const val REARM_WAIT_MS = 8_000L
+/** Longest wait for an answer after the final transcript before the idle close still applies. */
+private const val ANSWER_WAIT_SECONDS = 120
+/** Least time for a question before its first transcript (sentence-level engines send no partials). */
+private const val QUESTION_SECONDS = 30
+/** Rough reading/speaking pace of an answer on the glasses, for the idle close after a reply. */
+private const val READ_CHARS_PER_SECOND = 5

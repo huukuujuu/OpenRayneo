@@ -149,7 +149,7 @@ SDK 열거형에만 있는 `0x01/02/03/04/07/08/0a/0c/18/20`은 이름만으로 
 | 4 | 호스트 VAD: START 1, STOP 2, TIMEOUT 3 |
 | 5 | 호스트 ASR `{text,final}` |
 | 6/9 | TTS 상태 / SpeechStatus: LISTENING 1, RESPONDING 2, THINKING 3 |
-| 7/8 | 호스트 종료 / 안경 종료. 의미가 불분명한 rc는 임의로 확장하지 않음 |
+| 7/8 | 호스트 종료(공식 앱 이름 `phone_exit`, `{rc,errorMsg?}`) / 안경 종료(예: rc 6 "TP triggered abort"). 앱은 깨우기 창 자동 닫기에 2 rc2 뒤 7 `{rc:0}`를 보낸다(rc 값과 창 닫힘은 실기기 확인 필요). 의미가 불분명한 rc는 임의로 확장하지 않음 |
 | 11 | 수동 다음 턴, 직전 답변의 sid를 이어 씀 |
 | 12/32 | 워크플로 완료 / SkillPayload 답변. 현재 SID와 호출 순서대로 보냄 |
 

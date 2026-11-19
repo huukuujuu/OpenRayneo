@@ -58,7 +58,7 @@ internal object NavigationFeed {
                 !enabled -> "Amap에서 내비게이션을 시작한 뒤 따라갈 알림을 선택하세요"
                 selected == null -> "선택한 Amap 알림 대기 중. 알림이 바뀌었다면 다시 선택하세요"
                 selected?.instruction == null -> "Amap 알림을 받았지만 인식 가능한 회전 방향과 거리가 없습니다. Amap을 확인하세요"
-                else -> selected!!.instruction!!.let { "Amap 추종: ${it.direction} · ${it.meters}m" }
+                else -> selected!!.instruction!!.let { "Amap 안내: ${it.direction} · ${it.meters}m" }
             }
 
     val frame: String?

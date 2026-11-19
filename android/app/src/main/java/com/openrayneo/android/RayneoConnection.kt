@@ -248,7 +248,7 @@ internal class RayneoConnection(private val context: Context, private val listen
         override fun onCharacteristicWrite(connection: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             if (connection !== gatt || characteristic.uuid != SEND) return
             guarded {
-                check(status == BluetoothGatt.GATT_SUCCESS) { "BLE  쓰기 실패: $status" }
+                check(status == BluetoothGatt.GATT_SUCCESS) { "BLE 쓰기 실패: $status" }
                 bleWriting = false
                 bleWrites.removeFirstOrNull()?.completion?.let(::log)
                 writeNextBleChunk()
@@ -292,11 +292,11 @@ internal class RayneoConnection(private val context: Context, private val listen
                 check(fields[17]?.contentEquals(authentication(random)) == true) { "앱 인증이 거부됨" }
                 if (!authenticationHandled) {
                     authenticationHandled = true
-                    log("BLE  앱 인증 통과")
+                    log("BLE 앱 인증 통과")
                     if (bleOnly) {
                         main.removeCallbacks(timeout)
                         ready = true
-                        state("BLE  인증됨, 알림 시도 가능 (완전한 페어링은 미검증)", ready = true)
+                        state("BLE 인증됨, 알림 시도 가능 (완전한 페어링은 미검증)", ready = true)
                     } else openRfcomm()
                 }
             }
@@ -324,7 +324,7 @@ internal class RayneoConnection(private val context: Context, private val listen
         val connection = checkNotNull(gatt)
         bleWriting = true
         check(connection.writeCharacteristic(checkNotNull(send), bleWrites.first().bytes,
-            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) == BluetoothStatusCodes.SUCCESS) { "BLE  전송이 받아들여지지 않음" }
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) == BluetoothStatusCodes.SUCCESS) { "BLE 전송이 받아들여지지 않음" }
     }
 
     private fun authentication(random: ByteArray): ByteArray =
@@ -342,7 +342,7 @@ internal class RayneoConnection(private val context: Context, private val listen
     }
 
     private fun connectRfcomm(target: BluetoothDevice) {
-        state("BLE  인증됨, 연결 중: SPP…", busy = true)
+        state("BLE 인증됨, 연결 중: SPP…", busy = true)
         val session = generation
         log("클래식 블루투스 페어링 상태=${target.bondState}; RFCOMM 서비스 UUID=$SPP")
         val pending = target.createRfcommSocketToServiceRecord(SPP)

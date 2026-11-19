@@ -37,7 +37,7 @@ internal fun OnboardingScreen(
     val step = model.onboardingStep
     val scroll = rememberScrollState()
     LaunchedEffect(step) { scroll.scrollTo(0) }
-    val titles = listOf("OpenRayneo 시작하기", "안경 연결", "내비게이션 추종 켜기", "어시스턴트 설정", "설정 확인")
+    val titles = listOf("OpenRayneo 시작하기", "안경 연결", "내비게이션 안내 켜기", "어시스턴트 설정", "설정 확인")
     val subtitles =
         listOf(
             "OpenRayneo에 오신 것을 환영합니다. 몇 단계로 설정을 마치거나 나중에 계속할 수 있습니다.",
@@ -64,7 +64,7 @@ internal fun OnboardingScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                "시작하기: · ${step + 1} / 5",
+                "${step + 1} / 5",
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelLarge,
             )
@@ -269,7 +269,7 @@ internal fun SettingsScreen(
     ) {
         SectionLabel("서비스 연결")
         SettingsRow(
-            "기록 요약 모델",
+            "요약·대화 모델",
             if (!model.mobileModelConfigured) "아직 설정되지 않음"
             else model.config.optString("modelName").ifBlank { "설정 저장됨" },
             Icons.Outlined.Smartphone,
@@ -283,13 +283,13 @@ internal fun SettingsScreen(
         ) {
             open("computer")
         }
-        SettingsRow("DSH Go 및 외부 Agent", "음성 작업 위임, 안경 도구 및 로컬 API", Icons.Outlined.Hub) { open("agent-api") }
-        SectionLabel("권한 및 기기")
-        SettingsRow("음성 및 요약", "안경 ASR, 인물 분석 및 기록 요약", Icons.Outlined.Mic) { open("voice-settings") }
+        SettingsRow("DSH Go 연결", "깨우기 답변을 DSH Go로 보내기", Icons.Outlined.Hub) { open("agent-api") }
+        SettingsRow("음성 설정", "음성 인식, 불편한 점 고치기", Icons.Outlined.Mic) { open("voice-settings") }
+        SettingsRow("목소리 및 인물", "내 목소리 등록, 이름 붙이기", Icons.Outlined.People) { open("voice-profiles") }
+        SectionLabel("안경과 휴대폰")
         SettingsRow("안경 설정", "밝기, 화면 위치 및 깨우기", Icons.Outlined.Settings) { open("device-settings") }
         SettingsRow("홈 화면 및 콘텐츠", "위젯, 할 일, 일정 및 날씨", Icons.Outlined.Dashboard) { open("content") }
         SettingsRow("프롬프터 원고함", "로컬 원고, 안경 재생 및 제어", Icons.Outlined.Description) { open("teleprompter") }
-        SettingsRow("목소리 및 인물", "본인 등록, 연락처 및 목소리 프로필", Icons.Outlined.People) { open("voice-profiles") }
         SettingsRow(
             "근처 기기",
             if (model.bluetoothAllowed) "허용됨" else "안경 연결 시 필요",
@@ -300,7 +300,7 @@ internal fun SettingsScreen(
         SettingsRow(
             "Amap 알림 접근 권한",
             if (model.notificationAllowed) "허용됨 · ${model.state.notificationReadStatus}"
-            else "내비게이션 추종 시 필요",
+            else "내비게이션 안내를 안경에 띄울 때 필요",
             Icons.Outlined.NotificationsNone,
             actions.notificationAccess,
         )
@@ -517,6 +517,7 @@ internal fun DiagnosticsScreen(model: AppModel, actions: UiActions) {
                 Text("안경 연결 해제")
             }
         }
+        if (s.glasses.link.phase == LinkPhase.FULL) VirtualVoicePanel(model)
         ContentCard {
             Text("고급 연결 진단", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically) {

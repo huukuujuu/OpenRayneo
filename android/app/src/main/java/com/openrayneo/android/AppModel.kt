@@ -114,6 +114,19 @@ internal class AppModel(application: Application) : AndroidViewModel(application
             main.post { result.fold({ notice = "회의 오디오를 선택한 위치로 내보냈습니다" }, { error = it.message ?: "내보내기 실패" }) }
         }
     }
+    var pendingTextExport: Pair<List<String>, String>? = null
+    fun exportRecords(ids: List<String>, title: String, uri: android.net.Uri) {
+        val conversations = service().conversations
+        val records = conversations.repository.records.filter { it.id in ids }
+        val people = conversations.repository.people
+        files.execute {
+            val result = runCatching {
+                val text = RecordExport.markdown(records, people, title.takeIf { records.size > 1 })
+                context.contentResolver.openOutputStream(uri)!!.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+            }
+            main.post { result.fold({ notice = "기록 ${records.size}개를 내보냈습니다" }, { error = it.message ?: "내보내기 실패" }) }
+        }
+    }
     private val observer: () -> Unit = { refresh() }
     private val connection =
         object : ServiceConnection {
@@ -263,6 +276,19 @@ internal class AppModel(application: Application) : AndroidViewModel(application
         notice = "설정이 암호화되어 저장됨"
     }
 
+    /**
+     * Save a few voice settings (problem fixes, undo) without touching other unsaved edits on the screen:
+     * only these keys' drafts follow the new values.
+     */
+    fun saveSettingsQuietly(values: Map<String, String>) = attempt {
+        val updated = settings.read()
+        values.forEach { (key, value) -> updated.put(key, value) }
+        settings.save(updated)
+        config = updated
+        values.forEach { (key, value) -> formDrafts[key] = value }
+        bridge?.conversations?.configurationChanged()
+    }
+
     private fun resetFormDrafts() {
         configurationKeys.forEach {
             formDrafts[it] = config.optString(it)
@@ -276,7 +302,7 @@ internal class AppModel(application: Application) : AndroidViewModel(application
     companion object {
         val configurationKeys = listOf("modelUrl", "modelName", "modelKey", "mobileAgentBackend", "localAgentPort", "codexUrl", "codexCwd", "codexToken",
             "asrEngine", "asrKey", "asrUrl", "asrModelWake", "asrModelLive", "asrLanguage", "decisionKey", "decisionUrl", "decisionModel", "nativeAutoAnswer", "audioChannel",
-            "speakerThreshold", "voiceRoutingPrompt", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "answerMaxChars", "saveMeetingAudio", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded")
+            "speakerThreshold", "voiceRoutingPrompt", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "nativeIdleCloseSeconds", "answerMaxChars", "saveMeetingAudio", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded")
     }
 
     fun send(source: AnswerSource) = attempt {
@@ -313,11 +339,17 @@ internal class AppModel(application: Application) : AndroidViewModel(application
     }
 
     fun finishSetup() {
+        setupReplay = false
         onboarding = false
         preferences.edit().putBoolean("onboardingComplete", true).apply()
     }
 
+    /** The setup guide was reopened from settings: back on its first page returns to the app instead of leaving it. */
+    var setupReplay by mutableStateOf(false)
+        private set
+
     fun replaySetup() {
+        setupReplay = true
         step(0)
         onboarding = true
     }

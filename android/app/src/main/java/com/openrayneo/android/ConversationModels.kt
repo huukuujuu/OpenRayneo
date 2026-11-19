@@ -17,6 +17,8 @@ private val storedLabels = listOf(SELF_SPEAKER to "본인", MIXED_SPEAKER to "�
 
 /** Korean text for speaker labels, memory kinds and match reasons saved by older builds. */
 fun displayLabel(raw: String) = storedLabels.fold(raw) { text, (stored, shown) -> text.replace(stored, shown) }
+/** Short speaker tag for screens and exports: "c1:R0-A" → "A"; older per-turn labels of short speech → "짧은 발화". */
+fun speakerTag(raw: String) = if (raw.contains("짧은구간")) "짧은 발화" else displayLabel(raw).substringAfterLast('-').substringAfterLast(':')
 
 internal enum class ConversationMode(val title: String) { DAILY("일상"), MEETING("회의"), ENROLL("목소리 등록") }
 internal enum class ConversationSource(val title: String) { REALTIME("실시간 듀얼 마이크"), NATIVE("음성 깨우기"), ALWAYS_ON("종일 기록"), VOICE_MEMO("안경 음성 메모") }

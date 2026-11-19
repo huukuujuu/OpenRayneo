@@ -23,6 +23,11 @@ internal class MainActivity : ComponentActivity() {
         val id = exportRecord; exportRecord = null
         if (uri != null && id != null) model.exportRecording(id, uri)
     }
+    // The pending request lives in the view model, so it survives the activity being recreated behind the file picker.
+    private val exportText = registerForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri ->
+        val request = model.pendingTextExport; model.pendingTextExport = null
+        if (uri != null && request != null) model.exportRecords(request.first, request.second, uri)
+    }
     private var voiceSource = AnswerSource.MOBILE_AGENT
     private val contact = registerForActivityResult(ActivityResultContracts.PickContact()) { uri ->
         if (uri != null) model.attempt {
@@ -80,6 +85,7 @@ internal class MainActivity : ComponentActivity() {
                             permissions.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
                         },
                         exportRecording = { id -> exportRecord = id; exportAudio.launch("OpenRayneo-meeting-$id.wav") },
+                        exportRecords = { ids, title -> model.pendingTextExport = ids to title; exportText.launch("OpenRayneo-${RecordExport.fileName(title)}.md") },
                         contact = { contact.launch(null) },
                         locationPermission = { locationPermission.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)) },
                         scan = {
@@ -161,6 +167,8 @@ internal class MainActivity : ComponentActivity() {
 internal data class UiActions(
     val bluetoothPermission: () -> Unit,
     val exportRecording: (String) -> Unit,
+    /** Records as one Markdown file; the title names the file and, for several records, heads it. */
+    val exportRecords: (List<String>, String) -> Unit,
     val contact: () -> Unit,
     val locationPermission: () -> Unit,
     val scan: () -> Unit,
