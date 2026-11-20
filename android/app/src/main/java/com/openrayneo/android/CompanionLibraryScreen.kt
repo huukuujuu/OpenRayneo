@@ -69,7 +69,7 @@ internal fun AgentServerScreen(model: AppModel, requestBluetoothPermission: () -
                     model.notice = "동기화 주소와 전용 토큰이 복사됨"
                 }) { Text("동기화 주소와 전용 토큰 복사") }
                 TextButton(onClick = { model.attempt { sync.rotate() } }) { Text("동기화 토큰 재설정") }
-                Note("Mac의 기록 동기화 설정에 주소와 토큰을 입력하세요. USB 연결 시 adb forward tcp:8767 tcp:${syncState.port} 실행 후 Mac에 입력: http://127.0.0.1:8767.")
+                Note("복사한 주소와 토큰을 컴퓨터에 넣으면 기록 동기화와 앱 로그 가져오기(scripts/pull-phone-log.py)를 USB 없이 할 수 있습니다. USB 연결 시 adb forward tcp:8767 tcp:${syncState.port} 실행 후 Mac에 입력: http://127.0.0.1:8767.")
             }
         } else Note("기기 서비스가 준비되면 기록 동기화를 켤 수 있습니다.")
     }

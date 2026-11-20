@@ -66,7 +66,7 @@ npm pack --ignore-scripts --pack-destination <output-directory>
 3. BLE 인증, RFCOMM 데이터 통로, 화면/오디오 업무 상태를 각각 확인한다.
 4. `channel did not finish opening`이 나오면 진단 정보를 남기고 이번 실패 연결을 정리한다. 다른 앱이 연결을 놓았는지, 안경을 펴서 착용하고 화면이 켜졌는지 확인한 뒤 한 번 더 연결한다. 연결 버튼을 연달아 누르지 말고, 일반 복구에서 페어링 삭제나 앱 데이터 삭제를 하지 않는다.
 5. 안경이 웨이크에 반응하지 않으면 기기가 반응하지 않는 것인지 휴대폰이 받지 못한 것인지 먼저 구분한다. 앱 로그의 음성 이벤트와 연결 상태를 보고, 어시스턴트/음성 웨이크/웨이크워드의 실제 보고값을 확인한다. 어시스턴트 화면이 아직 남아 있으면 먼저 시계 화면으로 돌아간다. 기본 체크 상태나 보낸 명령이 기기에서 다시 읽은 값을 대신하지 않는다.
-6. 앱 로그를 PC로 가져올 때는 USB(adb)로 `adb pull /sdcard/Android/data/com.openrayneo.android/files/logs`를 쓴다(현재+이전 파일, 각 1MB, 1.43.0부터). 실시간으로는 `adb logcat -s OpenRayneo`, 케이블 없이는 앱의 "로그 공유"나 기록 동기화 `GET /v1/sync/logs`를 쓴다.
+6. 앱 로그를 PC로 가져올 때는 USB(adb)로 `adb pull /sdcard/Android/data/com.openrayneo.android/files/logs`를 쓴다(현재+이전 파일, 각 1MB, 1.43.0부터). 실시간으로는 `adb logcat -s OpenRayneo`. 케이블 없이(같은 Wi-Fi 또는 Tailscale)는 앱의 기록 동기화를 켜고 "동기화 주소와 전용 토큰 복사" 내용을 무시 목록의 `analysis/phone-sync.txt`에 붙여 둔 뒤 `uv run python scripts/pull-phone-log.py`(`GET /v1/sync/logs`, `analysis/phone-logs/`에 저장)를 쓴다.
 
 블루투스 bond가 손상된 경우에만 다시 페어링한다. 자세한 내용은 [프로토콜](protocol.md)을 본다.
 
