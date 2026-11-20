@@ -20,10 +20,20 @@ android {
         buildConfigField("String", "GIT_COMMIT", "\"" + (System.getenv("GITHUB_SHA")?.take(7) ?: "local") + "\"")
         ndk { abiFilters += providers.gradleProperty("openrayneo.abis").orElse("arm64-v8a").get().split(',') }
     }
+    // CI names the fixed key file explicitly; relying on the default ~/.android location signed every build differently.
+    val fixedKey = System.getenv("OPENRAYNEO_KEYSTORE")?.let(::file)
+    signingConfigs {
+        if (fixedKey != null) create("fixed") {
+            storeFile = fixedKey
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     buildTypes {
         getByName("release") {
-            // Direct-distribution Beta retains the existing certificate for in-place upgrades.
-            signingConfig = signingConfigs.getByName("debug")
+            // Direct-distribution Beta keeps one certificate so every APK installs over the previous one.
+            signingConfig = signingConfigs.getByName(if (fixedKey != null) "fixed" else "debug")
             isDebuggable = false
         }
     }

@@ -35,11 +35,11 @@ jobs:
           KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
-            mkdir -p ~/.android
-            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
-            # Fail early if the JDK cannot read the key the Android Gradle Plugin will use.
-            keytool -list -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey > /dev/null
-            echo "Using provided signing keystore"
+            key="$RUNNER_TEMP/openrayneo.keystore"
+            echo "$KEYSTORE_B64" | base64 -d > "$key"
+            # Fail early if the JDK cannot read the key Gradle signs with; the fingerprint is public.
+            keytool -list -v -keystore "$key" -storepass android -alias androiddebugkey | grep 'SHA256:'
+            echo "OPENRAYNEO_KEYSTORE=$key" >> "$GITHUB_ENV"
           else
             echo "::error::ANDROID_DEBUG_KEYSTORE_B64 secret is missing; a fresh key would make the APK uninstallable as an update"
             exit 1
