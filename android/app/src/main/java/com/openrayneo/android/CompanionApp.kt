@@ -135,7 +135,8 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
         snackbarHost = { SnackbarHost(snackbars) },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
+        // Edge-to-edge ignores adjustResize: shrink every screen above the keyboard so the focused field scrolls into view.
+        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
             when (route) {
                 "settings" ->
                     SettingsScreen(
