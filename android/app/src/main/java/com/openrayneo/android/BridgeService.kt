@@ -31,6 +31,7 @@ internal class BridgeService : Service() {
     lateinit var agentServer: LocalAgentServer; private set
     lateinit var recordSync: RecordSyncServer; private set
     lateinit var content: CompanionContent; private set
+    lateinit var anki: AnkiReview; private set
     private lateinit var supervisor: ConnectionSupervisor
     val connection get() = supervisor.transport
     private lateinit var display: GlassesDisplay
@@ -122,6 +123,7 @@ internal class BridgeService : Service() {
         override fun run() {
             if (navigation.enabled) NavigationNotifications.refresh(this@BridgeService)
             content.automaticWeather()
+            content.calendarTick()
             main.postDelayed(this, 30_000)
         }
     }
@@ -153,6 +155,11 @@ internal class BridgeService : Service() {
         requests = GlassesRequests(main, connection::sendFrame)
         deviceSettings = GlassesDeviceSettings(requests, ::notifyUI)
         content = CompanionContent(this, requests, { connection.resolvedClassicAddress?.takeIf { state.link.phase == LinkPhase.FULL } }, ::notifyUI)
+        // Cards use the answer page; without the glasses the review runs on the phone screen only.
+        anki = AnkiReview(this, main, ::notifyUI, { title, body ->
+            if (state.link.phase == LinkPhase.FULL && !state.disconnecting)
+                dispatch(GlassesEvent.RevealAnswer(AnswerContent(AnswerRef(AnswerSource.FLASHCARD, ++nextAnswer), title, body)))
+        }, { if ((state.intent as? DisplayIntent.Answer)?.ref?.source == AnswerSource.FLASHCARD) clearDisplay() })
         teleprompter = TeleprompterLibrary(this, requests, ::notifyUI)
         agentServer = LocalAgentServer(main, settings, ::notifyUI, {
             JSONObject().put("version", BuildConfig.VERSION_NAME).put("versionCode", BuildConfig.VERSION_CODE).put("commit", BuildConfig.GIT_COMMIT)
@@ -651,6 +658,7 @@ internal class BridgeService : Service() {
         when (source) {
             AnswerSource.MOBILE_AGENT -> check(!agent.running) { "답변을 기다리거나 먼저 중지하세요" }
             AnswerSource.COMPUTER_CODEX -> check(codex.connected && !codex.running) { "컴퓨터를 연결하고 현재 작업이 끝날 때까지 기다리세요" }
+            AnswerSource.FLASHCARD -> error("Anki 카드는 질문으로 보낼 수 없습니다")
         }
         autoClearFor = null; clearAnswerTask?.let(main::removeCallbacks); clearAnswerTask = null
         val ref = AnswerRef(source, ++nextAnswer)
@@ -661,6 +669,7 @@ internal class BridgeService : Service() {
             when (source) {
                 AnswerSource.MOBILE_AGENT -> agent.submit(text, context, allowTools, retainHistory, forceDsh)
                 AnswerSource.COMPUTER_CODEX -> codex.submit(text)
+                AnswerSource.FLASHCARD -> Unit
             }
         } catch (error: Exception) {
             pendingAnswers.remove(source); dispatch(GlassesEvent.CancelAnswer(source)); throw error
@@ -671,6 +680,7 @@ internal class BridgeService : Service() {
         when (source) {
             AnswerSource.MOBILE_AGENT -> agent.cancel()
             AnswerSource.COMPUTER_CODEX -> codex.cancel()
+            AnswerSource.FLASHCARD -> Unit
         }
     }
     private fun invalidateAnswer(source: AnswerSource) {
@@ -762,6 +772,7 @@ internal class BridgeService : Service() {
         val (question, answer) = when (source) {
             AnswerSource.MOBILE_AGENT -> agent.question to agent.answer
             AnswerSource.COMPUTER_CODEX -> codex.question to codex.answer
+            AnswerSource.FLASHCARD -> anki.state.card?.let { card -> if (anki.state.flipped) card.question to card.answer else "Anki" to card.question } ?: ("" to "")
         }
         require(answer.isNotBlank()) { "표시할 답변이 아직 없습니다" }
         dispatch(GlassesEvent.RevealAnswer(AnswerContent(AnswerRef(source, ++nextAnswer), question, answer)))
@@ -940,7 +951,7 @@ internal class BridgeService : Service() {
     override fun onDestroy() {
         destroyed = true; observers.clear(); main.removeCallbacksAndMessages(null)
         navigation.observers.remove(navigationObserver)
-        translator.close(); virtualVoice.close(); voiceMemo.close(); agent.close(); codex.close(); conversations.close(); agentServer.close(); recordSync.close(); requests.close(); content.close(); display.reset(); audio.close(); voiceAudio.close(); supervisor.close()
+        translator.close(); virtualVoice.close(); voiceMemo.close(); agent.close(); codex.close(); conversations.close(); agentServer.close(); recordSync.close(); requests.close(); content.close(); anki.close(); display.reset(); audio.close(); voiceAudio.close(); supervisor.close()
         logFile.close()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()

@@ -22,6 +22,7 @@ internal data class CompanionState(
     val conversation: ConversationState = ConversationState(),
     val deviceSettings: DeviceSettingsState = DeviceSettingsState(),
     val content: CompanionContentState = CompanionContentState(),
+    val anki: AnkiState = AnkiState(),
     val teleprompter: TeleprompterState = TeleprompterState(),
     val agentServer: AgentServerState = AgentServerState(),
     val recordSync: AgentServerState = AgentServerState(notice = "근거리 동기화가 꺼져 있음"),
@@ -78,6 +79,9 @@ internal class AppModel(application: Application) : AndroidViewModel(application
         private set
 
     var backgroundNotifications by mutableStateOf(false)
+        private set
+
+    var ankiAllowed by mutableStateOf(false)
         private set
 
     var onboarding by mutableStateOf(!preferences.getBoolean("onboardingComplete", false))
@@ -181,6 +185,7 @@ internal class AppModel(application: Application) : AndroidViewModel(application
                 conversation = s.conversations.state,
                 deviceSettings = s.deviceSettings.state,
                 content = s.content.state,
+                anki = s.anki.state,
                 teleprompter = s.teleprompter.state,
                 agentServer = s.agentServer.state,
                 recordSync = s.recordSync.state,
@@ -226,6 +231,8 @@ internal class AppModel(application: Application) : AndroidViewModel(application
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
                 PackageManager.PERMISSION_GRANTED
         NavigationNotifications.refresh(context, foreground = true)
+        ankiAllowed = AnkiDroid.allowed(context)
+        bridge?.content?.reloadCalendar()
     }
 
     fun scan() = attempt {

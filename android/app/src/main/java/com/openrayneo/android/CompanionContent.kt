@@ -13,30 +13,40 @@ import java.util.concurrent.TimeUnit
 
 internal data class CompanionContentState(val dashboard: JSONObject? = null, val todos: List<JSONObject> = emptyList(),
     val schedules: List<JSONObject> = emptyList(), val busy: Boolean = false, val notice: String = "연결 후 안경 콘텐츠 읽기",
-    val weatherCities: List<JSONObject> = emptyList(), val weather: JSONObject? = null, val automaticWeather: Boolean = false)
+    val weatherCities: List<JSONObject> = emptyList(), val weather: JSONObject? = null, val automaticWeather: Boolean = false,
+    /** Phone-side state below survives disconnects: to-dos live on the phone, the calendar is the phone's. */
+    val todoNotice: String = "", val calendarAllowed: Boolean = false, val calendars: List<PhoneCalendar.Source> = emptyList(),
+    /** Chosen calendar ids; null = every visible calendar. */
+    val calendarSelection: Set<Long>? = null, val calendarEvents: List<PhoneCalendar.Event> = emptyList(),
+    val calendarToGlasses: Boolean = true, val calendarNotice: String = "")
 
 /** Device-backed content shared by manual pages, model tools and the local Agent API. */
 internal class CompanionContent(private val context: Context, private val requests: GlassesRequests,
     private val address: () -> String?, private val changed: () -> Unit) {
     @Volatile var state = CompanionContentState(); private set
+    private val stateLock = Any()
+    /** Both the main and the glasses thread write the state: copy-and-replace under one lock so no update is lost. */
+    private fun update(change: (CompanionContentState) -> CompanionContentState) { synchronized(stateLock) { state = change(state) } }
     private val phoneLocation = PhoneLocation(context)
     private val local = context.getSharedPreferences("device-content", Context.MODE_PRIVATE)
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     private fun device() = checkNotNull(address()) { "먼저 안경을 완전히 연결하세요" }
-    private fun cacheKey() = "todos:" + device()
-    private fun cachedTodos() = JSONArray(local.getString(cacheKey(), "[]")).objects()
-    private fun cache(items: List<JSONObject>) { check(local.edit().putString(cacheKey(), JSONArray(items).toString()).commit()) }
+    private val ui = android.os.Handler(android.os.Looper.getMainLooper())
+    /** UI observers run on the main thread; the glasses thread hands its updates over. */
+    private fun publish() { if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) changed() else ui.post(changed) }
     private var weatherAttemptAt = 0L
     fun connected() {
         val id = device()
-        state = state.copy(automaticWeather = local.getBoolean("weatherAutomatic:$id", false),
-            weather = local.getString("weatherCard:$id", null)?.let(::JSONObject)); changed()
+        update { it.copy(automaticWeather = local.getBoolean("weatherAutomatic:$id", false),
+            weather = local.getString("weatherCard:$id", null)?.let(::JSONObject)) }; changed()
         automaticWeather()
+        syncTodosLater()
+        calendarChanged = true; calendarTick()
     }
     fun setAutomaticWeather(enabled: Boolean) {
         check(local.edit().putBoolean("weatherAutomatic:" + device(), enabled).commit())
-        state = state.copy(automaticWeather = enabled); changed(); if (enabled) automaticWeather(force = true)
+        update { it.copy(automaticWeather = enabled) }; changed(); if (enabled) automaticWeather(force = true)
     }
     fun automaticWeather(force: Boolean = false) {
         if (address() == null || !state.automaticWeather || state.busy || !force && System.currentTimeMillis() - weatherAttemptAt < 30 * 60_000) return
@@ -46,11 +56,15 @@ internal class CompanionContent(private val context: Context, private val reques
         run { weather(if (city.optBoolean("current")) currentCity() else city); pushWeather() }
     }
     fun refresh() = run { dashboard(); events(1); events(0); JSONObject().put("readBack", true) }
-    fun disconnected() { weatherAttemptAt = 0; state = CompanionContentState(); changed() }
+    fun disconnected() {
+        weatherAttemptAt = 0; calendarSyncQueued = false; todoSyncQueued.set(false)
+        update { it.copy(dashboard = null, schedules = emptyList(), busy = false, notice = CompanionContentState().notice,
+            weatherCities = emptyList(), weather = null, automaticWeather = false) }; changed()
+    }
     fun run(work: () -> JSONObject) {
         check(!state.busy) { "현재 안경 작업을 기다리세요" }
-        state = state.copy(busy = true, notice = "안경과 동기화 중…"); changed()
-        execute(work) { result -> state = state.copy(busy = false, notice = result.fold({ it.optString("message").ifBlank { if (it.optBoolean("readBack")) "기기 재조회로 확인됨" else "전송됨, 자세한 상태는 결과 참조" } }, { it.message ?: "작업 실패" })); changed() }
+        update { it.copy(busy = true, notice = "안경과 동기화 중…") }; changed()
+        execute(work) { result -> update { it.copy(busy = false, notice = result.fold({ it.optString("message").ifBlank { if (it.optBoolean("readBack")) "기기 재조회로 확인됨" else "전송됨, 자세한 상태는 결과 참조" } }, { it.message ?: "작업 실패" })) }; changed() }
     }
     fun execute(work: () -> JSONObject, completion: (Result<JSONObject>) -> Unit) = requests.perform(work, completion)
     fun execute(name: String, args: JSONObject, completion: (Result<JSONObject>) -> Unit) = execute({ tool(name, args) }, completion)
@@ -59,7 +73,7 @@ internal class CompanionContent(private val context: Context, private val reques
         val response = launcher("dashboard_config", "", "0")
         val raw = response.getJSONObject("payload").get("data")
         val config = if (raw is JSONObject) raw else JSONObject(raw.toString())
-        state = state.copy(dashboard = config); return config
+        update { it.copy(dashboard = config) }; return config
     }
     fun layout(mode: Int, widgets: List<Int>): JSONObject {
         require(mode in 0..2 && widgets.size in 1..5 && widgets.distinct().size == widgets.size)
@@ -84,50 +98,246 @@ internal class CompanionContent(private val context: Context, private val reques
         val response = checkNotNull(last)
         check(response.optBoolean("needFullData") && response.getInt(if (eventType == 1) "todoTotal" else "scheduleTotal") == rows.size &&
             rows.map { it.getLong("eventID") }.distinct().size == rows.size) { "기기 목록이 완전히 반환되지 않아 변경하지 않았습니다" }
-        if (eventType == 1) {
-            val completed = cachedTodos().filter { it.optInt("status") == 1 && rows.none { row -> row.getLong("eventID") == it.getLong("eventID") } }
-            cache(rows + completed); state = state.copy(todos = rows + completed)
-        } else state = state.copy(schedules = rows)
+        if (eventType == 0) update { it.copy(schedules = rows) }
         return rows
     }
-    fun todo(action: String, args: JSONObject): JSONObject {
-        val key = "mutation:" + device() + ":" + args.optString("request_id").ifBlank { UUID.randomUUID().toString() }
-        local.getString(key, null)?.let { saved ->
-            val old = JSONObject(saved); return JSONObject().put("eventID", old.getLong("id")).put("duplicate", true)
-                .put("items", JSONArray(events(1))).put("readBack", false).put("message", "같은 요청이 이미 전송되었습니다. 재조회 결과로 확인하세요. 중복 변경은 없습니다")
-        }
-        val before = events(1)
-        val old = cachedTodos().firstOrNull { it.getLong("eventID") == args.optLong("event_id", -1) }
-        val now = System.currentTimeMillis()
-        val id = if (action == "add") {
-            val reserved = cachedTodos().map { it.getLong("eventID") }.toSet()
-            (80000L until 90000L).firstOrNull { it !in reserved } ?: error("휴대폰 로컬 할 일 ID가 모두 소진됨")
-        } else checkNotNull(old) { "해당 할 일을 찾을 수 없습니다. 먼저 목록을 읽으세요" }.getLong("eventID")
-        val target = if (action == "add") JSONObject().put("eventType", 1).put("eventID", id).put("createTime", now)
-            .put("title", args.getString("title")).put("isImportant", args.optBoolean("important")).put("status", 0).put("eventSource", 0)
-            else JSONObject(old.toString())
-        if (args.has("title")) { require(args.getString("title").isNotBlank()); target.put("title", args.getString("title")) }
-        if (args.has("important")) target.put("isImportant", args.getBoolean("important"))
-        if (args.has("completed")) target.put("status", if (args.getBoolean("completed")) 1 else 0)
-        target.put("lastModifiedTime", now / 1000)
-        check(local.edit().putString(key, JSONObject().put("id", id).put("action", action).put("item", target).toString()).commit())
-        target.put("syncState", "outcome_unknown")
-        cache(cachedTodos().filter { it.getLong("eventID") != id } + target)
-        if (action == "delete") requests.request(22, 7, JSONObject().put("eventType", 1).put("todoTotal", 1).put("eventIDList", JSONArray().put(id)), wait = false)
-        else {
-            requests.request(22, 2, JSONObject(target.toString()).apply { remove("syncState") }, wait = false)
-            if (action == "update" && args.has("completed")) {
-                val pending = (before.filter { it.getLong("eventID") != id } + target).filter { it.optInt("status") != 1 }
-                if (pending.isEmpty() || old?.optInt("status") == 1 && !args.getBoolean("completed"))
-                    requests.request(22, 6, JSONObject().put("total", pending.size).put("isLastBatch", true).put("eventList", JSONArray(pending.map { JSONObject(it.toString()).apply { remove("syncState") } })), wait = false)
+    // ---- To-dos: the phone keeps the list; when connected the glasses mirror its open items. ----
+    // Item fields besides the wire ones: rev (bumped on every phone edit), synced (rev the glasses confirmed),
+    // reopened (the phone un-checked it), deleted (tombstone until the glasses drop it), everOnGlasses.
+    private val todoLock = Any()
+    private val todoSyncQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    private fun storedTodos(): MutableList<JSONObject> {
+        local.getString(TODOS, null)?.let { return JSONArray(it).objects().toMutableList() }
+        // First run after the phone became the owner: take over the per-glasses caches of the old version,
+        // so their IDs stay reserved and nothing on those glasses gets overwritten.
+        val caches = local.all.filterKeys { it.startsWith("todos:") && it != TODOS }.mapValues { JSONArray(it.value as String).objects() }
+        val migrated = caches.values.flatten().distinctBy { it.getLong("eventID") }
+            .map { JSONObject(it.toString()).apply { remove("syncState"); put("rev", 0).put("synced", 0).put("everOnGlasses", true) } }
+        val edit = local.edit().putString(TODOS, JSONArray(migrated).toString())
+        // Those glasses held the cached open items: one they no longer hold was finished there.
+        caches.forEach { (key, rows) -> edit.putString("todoSeen:" + key.removePrefix("todos:"),
+            JSONArray(rows.filter { it.optInt("status") == 0 }.map { it.getLong("eventID") }).toString()) }
+        check(edit.commit())
+        return migrated.toMutableList()
+    }
+    private fun storeTodos(items: List<JSONObject>) {
+        check(local.edit().putString(TODOS, JSONArray(items).toString()).commit())
+        update { it.copy(todos = visible(items)) }; publish()
+    }
+    private fun dirty(item: JSONObject) = item.optInt("rev") != item.optInt("synced")
+    /** IDs the glasses at [device] were last seen holding: only those can be inferred as finished there. */
+    private fun seenOn(device: String) = JSONArray(local.getString("todoSeen:$device", null) ?: "[]").longs().toSet()
+    /** Open first, important first, newest first; deleted ones wait only until the glasses confirm. */
+    private fun visible(items: List<JSONObject>) = items.filter { !it.optBoolean("deleted") }
+        .sortedWith(compareBy<JSONObject>({ it.optInt("status") }, { !it.optBoolean("isImportant") }, { -it.optLong("createTime") }))
+    private fun freeId(items: List<JSONObject>, also: Collection<Long> = emptyList()): Long {
+        val used = items.map { it.getLong("eventID") }.toSet() + also
+        // The range the glasses accepted for phone-made to-dos before.
+        return (80000L until 90000L).firstOrNull { it !in used } ?: error("휴대폰 할 일 ID가 모두 소진됨")
+    }
+    /** Phone-side change (any thread); the glasses follow when connected. */
+    fun todoLocal(action: String, args: JSONObject): JSONObject {
+        val id = synchronized(todoLock) {
+            val items = storedTodos(); val now = System.currentTimeMillis()
+            val target = if (action == "add") JSONObject().put("eventType", 1).put("eventID", freeId(items)).put("createTime", now).put("title", "")
+                .put("isImportant", false).put("status", 0).put("eventSource", 0).put("rev", 0).put("synced", 0).also { items += it }
+            else checkNotNull(items.firstOrNull { it.getLong("eventID") == args.getLong("event_id") && !it.optBoolean("deleted") }) {
+                "해당 할 일을 찾을 수 없습니다. 먼저 목록을 읽으세요" }
+            if (action == "delete") { if (target.optBoolean("everOnGlasses")) target.put("deleted", true) else items.remove(target) }
+            else {
+                if (args.has("title")) { val title = args.getString("title").trim(); require(title.isNotEmpty()) { "할 일 제목을 입력하세요" }; target.put("title", title) }
+                if (args.has("important")) target.put("isImportant", args.getBoolean("important"))
+                if (args.has("completed")) {
+                    val completed = args.getBoolean("completed")
+                    if (!completed && target.optInt("status") != 0) target.put("reopened", true)
+                    if (completed) target.remove("reopened")
+                    target.put("status", if (completed) 1 else 0)
+                }
+                require(target.optString("title").isNotBlank()) { "할 일 제목을 입력하세요" }
             }
+            target.put("lastModifiedTime", now / 1000).put("rev", target.optInt("rev") + 1)
+            storeTodos(items); target.getLong("eventID")
         }
-        val actual = events(1); val found = actual.firstOrNull { it.getLong("eventID") == id }
-        val confirmed = if (action == "delete") before.any { it.getLong("eventID") == id } && found == null
-            else found?.let { it.optString("title") == target.optString("title") && it.optInt("status") == target.optInt("status") && it.optBoolean("isImportant") == target.optBoolean("isImportant") } == true
-        if (action == "delete" && confirmed) cache(cachedTodos().filter { it.getLong("eventID") != id })
-        return JSONObject().put("eventID", id).put("readBack", confirmed).put("pendingRemoved", old != null && found == null)
-            .put("items", JSONArray(state.todos)).put("message", if (confirmed) "할 일이 재조회로 확인됨" else "할 일 변경을 전송했습니다. 미완료 목록은 재조회했지만 결과는 추가 확인이 필요합니다")
+        syncTodosLater()
+        return JSONObject().put("eventID", id).put("items", JSONArray(state.todos))
+            .put("message", if (address() == null) "휴대폰에 저장했습니다. 안경이 연결되면 안경 목록에도 반영합니다" else "휴대폰에 저장하고 안경에 보내는 중입니다")
+    }
+    private fun todoTool(action: String, args: JSONObject): JSONObject {
+        val request = args.optString("request_id").takeIf { it.isNotBlank() }?.let { "todoRequest:$it" }
+        request?.let { key -> local.getString(key, null)?.let { id ->
+            return JSONObject().put("eventID", id.toLong()).put("duplicate", true).put("items", JSONArray(state.todos))
+                .put("message", "같은 요청은 이미 처리했습니다. 중복 변경은 없습니다")
+        } }
+        val result = todoLocal(action, args)
+        request?.let { check(local.edit().putString(it, result.getLong("eventID").toString()).commit()) }
+        return result
+    }
+    fun syncTodosLater() {
+        if (address() == null || !todoSyncQueued.compareAndSet(false, true)) return
+        execute({ todoSyncQueued.set(false); syncTodos() }) { result ->
+            // A disconnect cancels the queued sync; that is not a failure worth showing.
+            result.exceptionOrNull()?.takeIf { address() != null }?.let { error -> update { it.copy(todoNotice = "안경과 할 일 맞추기 실패: ${error.message}") }; changed() }
+        }
+    }
+    /**
+     * Glasses thread. The glasses list holds open to-dos only. Their new items come to the phone; phone edits, adds and
+     * deletes go to the glasses; an open item these glasses held before and dropped was finished there (unless the
+     * phone re-opened it).
+     */
+    fun syncTodos(): JSONObject {
+        val device = device()
+        val glasses = events(1)
+        val seen = seenOn(device)
+        fun wire(item: JSONObject) = JSONObject(item.toString()).apply {
+            listOf("rev", "synced", "reopened", "deleted", "everOnGlasses", "syncState").forEach(::remove) }
+        fun same(a: JSONObject, b: JSONObject) = a.optString("title").trim() == b.optString("title").trim()
+        val (upserts, deletes, open) = synchronized(todoLock) {
+            val items = storedTodos(); val onGlasses = glasses.map { it.getLong("eventID") }.toSet()
+            val upserts = mutableListOf<JSONObject>(); val deletes = mutableListOf<Long>()
+            for (row in glasses) {
+                var mine = items.firstOrNull { it.getLong("eventID") == row.getLong("eventID") }
+                // A phone item these glasses never had that shares an ID with a different glasses item: move the phone one.
+                if (mine != null && row.getLong("eventID") !in seen && !mine.optBoolean("everOnGlasses") && !same(mine, row)) {
+                    mine.put("eventID", freeId(items, onGlasses)); mine = null
+                }
+                when {
+                    mine == null -> items += JSONObject(row.toString()).put("rev", 0).put("synced", 0).put("everOnGlasses", true)
+                    mine.optBoolean("deleted") -> deletes += row.getLong("eventID")
+                    dirty(mine) -> upserts += mine
+                    else -> {
+                        listOf("title", "isImportant", "lastModifiedTime").forEach { if (row.has(it)) mine.put(it, row.get(it)) }
+                        mine.put("status", 0)
+                    }
+                }
+                mine?.put("everOnGlasses", true)
+            }
+            items.removeAll { it.optBoolean("deleted") && it.getLong("eventID") !in onGlasses }
+            for (mine in items) if (mine.getLong("eventID") !in onGlasses && !mine.optBoolean("deleted")) {
+                val id = mine.getLong("eventID")
+                when {
+                    mine.optInt("status") != 0 -> mine.put("synced", mine.optInt("rev"))
+                    id in seen && !mine.optBoolean("reopened") -> mine.put("status", 1).put("synced", mine.optInt("rev"))
+                    else -> upserts += mine
+                }
+            }
+            storeTodos(items)
+            Triple(upserts.map { JSONObject(it.toString()) }, deletes.toList(),
+                items.filter { it.optInt("status") == 0 && !it.optBoolean("deleted") }.map(::wire))
+        }
+        if (upserts.isNotEmpty() || deletes.isNotEmpty()) {
+            deletes.forEach { id -> requests.request(22, 7, JSONObject().put("eventType", 1).put("todoTotal", 1).put("eventIDList", JSONArray().put(id)), wait = false) }
+            upserts.forEach { requests.request(22, 2, wire(it), wait = false) }
+            // The whole open list as one batch, as the glasses expect after completions and re-opens.
+            requests.request(22, 6, JSONObject().put("total", open.size).put("isLastBatch", true).put("eventList", JSONArray(open)), wait = false)
+        }
+        val actual = if (upserts.isEmpty() && deletes.isEmpty()) glasses else events(1)
+        var unconfirmed = 0
+        synchronized(todoLock) {
+            val items = storedTodos()
+            for (sent in upserts) {
+                val mine = items.firstOrNull { it.getLong("eventID") == sent.getLong("eventID") } ?: continue
+                val row = actual.firstOrNull { it.getLong("eventID") == sent.getLong("eventID") }
+                // Accepted when the glasses hold an open item or dropped a finished one; their exact text may differ.
+                if (if (sent.optInt("status") == 0) row != null else row == null) {
+                    if (mine.optInt("rev") == sent.optInt("rev")) { mine.put("synced", sent.optInt("rev")); mine.remove("reopened") }
+                } else unconfirmed++
+            }
+            for (id in deletes) if (actual.none { it.getLong("eventID") == id }) items.removeAll { it.getLong("eventID") == id && it.optBoolean("deleted") } else unconfirmed++
+            storeTodos(items)
+            check(local.edit().putString("todoSeen:$device", JSONArray(actual.map { it.getLong("eventID") }).toString()).commit())
+        }
+        update { it.copy(todoNotice = when {
+            upserts.isEmpty() && deletes.isEmpty() -> "안경 할 일과 같습니다"
+            unconfirmed == 0 -> "안경 할 일과 맞췄습니다"
+            else -> "안경에서 아직 확인되지 않은 할 일 ${unconfirmed}개는 다음 연결 때 다시 보냅니다"
+        }) }; publish()
+        return JSONObject().put("readBack", unconfirmed == 0).put("items", JSONArray(state.todos))
+    }
+
+    // ---- Calendar: the phone's calendars (Google accounts on the phone), read only; today and tomorrow go to the glasses. ----
+    @Volatile private var calendarSyncQueued = false
+    private var calendarChanged = true
+    private var calendarSyncedAt = 0L
+    private var calendarDay: LocalDate? = null
+    private var observing = false
+    private val calendarObserver = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) { calendarChanged = true; reloadCalendar(); calendarTick() }
+    }
+    /** Main thread: re-read calendars and the coming week for the phone screens. */
+    fun reloadCalendar() {
+        val allowed = PhoneCalendar.allowed(context)
+        if (allowed && !observing) { context.contentResolver.registerContentObserver(android.provider.CalendarContract.CONTENT_URI, true, calendarObserver); observing = true }
+        val from = PhoneCalendar.dayStart(); val to = PhoneCalendar.dayStart(LocalDate.now().plusDays(7))
+        update { it.copy(calendarAllowed = allowed, calendars = PhoneCalendar.sources(context),
+            calendarEvents = PhoneCalendar.events(context, state.calendarSelection, from, to)) }; changed()
+    }
+    fun selectCalendars(ids: Set<Long>?) {
+        check(local.edit().apply { if (ids == null) remove("calendarSelection") else putString("calendarSelection", JSONArray(ids.toList()).toString()) }.commit())
+        update { it.copy(calendarSelection = ids) }; reloadCalendar(); calendarChanged = true; calendarTick()
+    }
+    fun setCalendarToGlasses(enabled: Boolean) {
+        check(local.edit().putBoolean("calendarToGlasses", enabled).commit())
+        update { it.copy(calendarToGlasses = enabled) }; changed(); calendarChanged = true; calendarTick(force = true)
+    }
+    /** Main thread, every 30 s and after changes: send today and tomorrow when the calendar or the day changed, else every 15 min. */
+    fun calendarTick(force: Boolean = false) {
+        if (address() == null || !state.calendarAllowed || calendarSyncQueued || !force && !state.calendarToGlasses) return
+        val day = LocalDate.now()
+        if (!force && !calendarChanged && day == calendarDay && System.currentTimeMillis() - calendarSyncedAt < 15 * 60_000) return
+        calendarSyncQueued = true; calendarChanged = false
+        execute({ syncCalendar() }) { result ->
+            calendarSyncQueued = false; calendarSyncedAt = System.currentTimeMillis(); calendarDay = day
+            if (result.isFailure) calendarChanged = true
+            update { it.copy(calendarNotice = result.fold({ it.optString("message") }, { "안경 일정 보내기 실패: ${it.message}" })) }; changed()
+        }
+    }
+    /** Glasses thread. Replaces the calendar items sent before and keeps schedules made elsewhere (assistant, glasses). */
+    fun syncCalendar(): JSONObject {
+        val deviceId = device(); val zone = ZoneId.systemDefault(); val now = System.currentTimeMillis()
+        // Turned off: one last send with no calendar items takes the ones sent before off the glasses.
+        val occurrences = if (!state.calendarToGlasses) emptyList()
+            else PhoneCalendar.events(context, state.calendarSelection, PhoneCalendar.dayStart(), PhoneCalendar.dayStart(LocalDate.now().plusDays(2)))
+        val oldMapping = JSONObject(local.getString("calendarMapping", null) ?: "{}")
+        val existing = events(0)
+        val previous = JSONArray(local.getString("calendarImported:$deviceId", "[]")).longs().toSet()
+        val used = (existing.map { it.getLong("eventID") } + oldMapping.keys().asSequence().map { oldMapping.getLong(it) }).toMutableSet()
+        val mapping = JSONObject(); var next = now
+        val items = occurrences.map { event ->
+            val id = if (oldMapping.has(event.key)) oldMapping.getLong(event.key) else { while (next in used) next++; next.also { used += it; next++ } }
+            mapping.put(event.key, id)
+            // Started before today (multi-day): show it from today, the glasses list only today and tomorrow.
+            val start = maxOf(event.begin, PhoneCalendar.dayStart()) / 1000; val end = maxOf(event.end / 1000, start + 60)
+            val instant = Instant.ofEpochSecond(start)
+            JSONObject().put("eventType", 0).put("eventID", id).put("status", 0).put("eventSource", 0).put("createTime", now)
+                .put("title", event.title).put("startTime", start).put("endTime", end).put("localTimeOffset", zone.rules.getOffset(instant).totalSeconds)
+                .put("isTomorrowSchedule", instant.atZone(zone).toLocalDate() == LocalDate.now(zone).plusDays(1)).put("lastModifiedTime", now)
+                .apply { if (event.location.isNotBlank()) put("location", event.location) }
+        }
+        val ids = items.map { it.getLong("eventID") }
+        // Remember what is about to be sent first, so a lost reply is still replaced next time.
+        check(local.edit().putString("calendarMapping", mapping.toString())
+            .putString("calendarImported:$deviceId", JSONArray((previous + ids).toList()).toString()).commit())
+        val list = existing.filter { it.getLong("eventID") !in previous && it.getLong("eventID") !in ids } + items
+        requests.request(22, 5, JSONObject().put("scheduleTotal", list.size).put("isLastBatch", true).put("eventList", JSONArray(list)), wait = false)
+        val actual = events(0)
+        val confirmed = items.all { sent -> actual.any { row -> listOf("eventID", "title", "startTime", "endTime").all { row.opt(it)?.toString() == sent.opt(it)?.toString() } } } &&
+            actual.none { it.getLong("eventID") in previous && it.getLong("eventID") !in ids }
+        if (confirmed) check(local.edit().putString("calendarImported:$deviceId", JSONArray(ids).toString()).commit())
+        return JSONObject().put("count", items.size).put("readBack", confirmed).put("items", JSONArray(actual))
+            .put("message", when {
+                !state.calendarToGlasses -> if (confirmed) "안경에서 캘린더 일정을 뺐습니다" else "안경에서 캘린더 일정을 빼는 중입니다"
+                confirmed -> "오늘·내일 일정 ${items.size}개를 안경에 보냈습니다"
+                else -> "일정을 보냈지만 안경 목록에서 아직 확인되지 않았습니다. 잠시 뒤 다시 보냅니다" })
+    }
+    /** The coming week of the phone's calendar for the assistant. */
+    private fun calendarRead(): JSONObject {
+        check(PhoneCalendar.allowed(context)) { "휴대폰 캘린더 권한이 없습니다. 앱 홈의 일정 카드에서 허용하세요" }
+        val zone = ZoneId.systemDefault(); val format = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        val rows = PhoneCalendar.events(context, state.calendarSelection, PhoneCalendar.dayStart(), PhoneCalendar.dayStart(LocalDate.now().plusDays(7))).map { e ->
+            JSONObject().put("title", e.title).put("allDay", e.allDay).put("calendar", e.calendar).put("location", e.location)
+                .put("start", Instant.ofEpochMilli(e.begin).atZone(zone).format(format)).put("end", Instant.ofEpochMilli(e.end).atZone(zone).format(format))
+        }
+        return JSONObject().put("items", JSONArray(rows)).put("range", "오늘부터 7일").put("source", "휴대폰 캘린더(구글 계정 포함), 읽기 전용")
     }
     fun schedule(action: String, args: JSONObject): JSONObject {
         val mutationKey = "scheduleMutation:" + device() + ":" + args.optString("request_id").ifBlank { UUID.randomUUID().toString() }
@@ -169,7 +379,7 @@ internal class CompanionContent(private val context: Context, private val reques
         } else listOf(trimmed)
         val cities = names.flatMap(::search).distinctBy { it.optLong("id") }
             .sortedByDescending { it.optLong("population", 0) }.take(10)
-        state = state.copy(weatherCities = cities)
+        update { it.copy(weatherCities = cities) }
         return JSONObject().put("results", JSONArray(cities))
     }
     /** The phone's position as a weather city, named by the system geocoder (e.g. 강남구) when it can. */
@@ -212,7 +422,7 @@ internal class CompanionContent(private val context: Context, private val reques
             .put("hourly", data)
         check(address() == deviceId) { "기기 연결이 바뀌어 이전 요청의 날씨는 저장하지 않았습니다" }
         card.put("fetchedAt", System.currentTimeMillis())
-        state = state.copy(weather = card)
+        update { it.copy(weather = card) }
         check(local.edit().putString("weatherCity:" + device(), city.toString()).putString("weatherCard:" + device(), card.toString()).commit())
         return JSONObject().put("weather", card)
     }
@@ -229,8 +439,9 @@ internal class CompanionContent(private val context: Context, private val reques
             .put("value", 0).put("mode", 0).put("data", data).put("ts", timestamp))) { type, body -> type == 19 && body.optString("cmd") == command })
     }
     fun tool(name: String, args: JSONObject): JSONObject = when (name) {
-        "todo_read" -> JSONObject().put("items", JSONArray(events(1))).put("localItems", JSONArray(state.todos))
-        "todo_add", "todo_update", "todo_delete" -> todo(name.substringAfter('_'), args)
+        "todo_read" -> JSONObject().put("items", JSONArray(state.todos)).put("source", "휴대폰 할 일 목록(안경과 동기화)")
+        "todo_add", "todo_update", "todo_delete" -> todoTool(name.substringAfter('_'), args)
+        "calendar_read" -> calendarRead()
         "schedule_read" -> JSONObject().put("items", JSONArray(events(0)))
         "schedule_add", "schedule_update", "schedule_delete" -> schedule(name.substringAfter('_'), args)
         "weather_search_cities" -> searchCities(args.getString("query"))
@@ -242,18 +453,33 @@ internal class CompanionContent(private val context: Context, private val reques
         "dashboard_update" -> layout(args.getInt("mode"), args.getJSONArray("widgets").ints())
         else -> error("구현되지 않은 기기 도구: $name")
     }
+    /** Glasses-side to-do changes (checked off on the glasses). A finished state always wins; text only on unedited items. */
     fun observe(type: Int, body: JSONObject) {
-        if (type !in setOf(4,10) || address() == null) return
-        val updates = if (type == 4) listOf(body) else body.optJSONArray("eventList").objects()
-        val cached = cachedTodos().toMutableList()
-        for (update in updates) {
-            val old = cached.firstOrNull { it.optLong("eventID") == update.optLong("eventID", -1) } ?: continue
-            listOf("status", "isImportant", "lastModifiedTime").forEach { if (update.has(it)) old.put(it, update.opt(it)) }
-            if (old.optString("syncState") != "outcome_unknown") old.put("syncState", "confirmed_by_glasses")
+        if (type !in setOf(4, 10) || address() == null) return
+        val updates = (if (type == 4) listOf(body) else body.optJSONArray("eventList").objects()).filter { it.optInt("eventType", 1) == 1 }
+        if (updates.isEmpty()) return
+        var unknown = false
+        synchronized(todoLock) {
+            val items = storedTodos(); var touched = false
+            for (update in updates) {
+                val mine = items.firstOrNull { it.optLong("eventID") == update.optLong("eventID", -1) }
+                if (mine == null) { unknown = true; continue }
+                val fields = if (dirty(mine)) listOf("status") else listOf("status", "isImportant", "lastModifiedTime")
+                fields.forEach { if (update.has(it) && mine.opt(it) != update.opt(it)) { mine.put(it, update.opt(it)); touched = true } }
+                if (update.optInt("status") != 0) mine.remove("reopened")
+            }
+            if (touched) storeTodos(items)
         }
-        cache(cached); state = state.copy(todos = cached); changed()
+        // Added on the glasses (e.g. by voice): bring it over now rather than at the next connect.
+        if (unknown) syncTodosLater()
     }
-    fun close() { http.dispatcher.cancelAll(); http.dispatcher.executorService.shutdown(); http.connectionPool.evictAll() }
+    // After every property above: the calendar observer and flags must exist before the first read.
+    init {
+        update { it.copy(todos = visible(storedTodos()), calendarToGlasses = local.getBoolean("calendarToGlasses", true),
+            calendarSelection = local.getString("calendarSelection", null)?.let { JSONArray(it).longs().toSet() }) }
+        reloadCalendar()
+    }
+    fun close() { if (observing) context.contentResolver.unregisterContentObserver(calendarObserver); http.dispatcher.cancelAll(); http.dispatcher.executorService.shutdown(); http.connectionPool.evictAll() }
     private fun get(url: String): JSONObject = http.newCall(Request.Builder().url(url).build()).execute().use { response ->
         check(response.isSuccessful) { "날씨 요청 실패: HTTP ${response.code}" }; JSONObject(checkNotNull(response.body).string())
     }
@@ -267,3 +493,5 @@ internal class CompanionContent(private val context: Context, private val reques
 }
 internal fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else List(length()) { getJSONObject(it) }
 internal fun JSONArray?.ints(): List<Int> = if (this == null) emptyList() else List(length()) { getInt(it) }
+internal fun JSONArray?.longs(): List<Long> = if (this == null) emptyList() else List(length()) { getLong(it) }
+private const val TODOS = "todos:phone"

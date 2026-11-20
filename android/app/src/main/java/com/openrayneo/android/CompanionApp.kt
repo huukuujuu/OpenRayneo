@@ -70,7 +70,8 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                                 "voice-settings" -> "음성 설정"
                                 "voice-profiles" -> "목소리 및 인물"
                                 "device-settings" -> "안경 설정"
-                                "content" -> "홈 화면 및 콘텐츠"
+                                "content" -> "안경 홈 화면과 일정"
+                                "anki" -> "Anki 복습"
                                 "teleprompter" -> "프롬프터 자료"
                                 "agent-api" -> "DSH Go 연결"
                                 else -> listOf("OpenRayneo", "내비게이션", "어시스턴트", "기록")[tab]
@@ -155,6 +156,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                 "voice-profiles" -> VoiceProfilesScreen(model)
                 "device-settings" -> GlassesSettingsScreen(model)
                 "content" -> CompanionContentScreen(model)
+                "anki" -> AnkiScreen(model, actions)
                 "teleprompter" -> pages.SaveableStateProvider("teleprompter") { TeleprompterScreen(model) }
                 "agent-api" -> AgentServerScreen(model, actions.bluetoothPermission)
                 else ->
@@ -166,6 +168,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                                 0 ->
                                     GlassesScreen(
                                         model,
+                                        actions,
                                         { devices = true },
                                         { tab = it },
                                         { open("device-settings") },
@@ -240,6 +243,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
 @Composable
 private fun GlassesScreen(
     model: AppModel,
+    actions: UiActions,
     connect: () -> Unit,
     navigate: (Int) -> Unit,
     diagnostics: () -> Unit,
@@ -288,16 +292,19 @@ private fun GlassesScreen(
                                     }
             }
         }
+        item { TodoCard(model) }
+        item { CalendarCard(model, actions) { configure("content") } }
         item {
             ContentCard {
                 Text("독립 컴패니언", style = MaterialTheme.typography.titleMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ToolOutlinedButton(onClick = { configure("content") }) { Text("홈 화면 및 콘텐츠") }
+                    ToolOutlinedButton(onClick = { configure("anki") }) { Text("Anki 복습") }
                     ToolOutlinedButton(onClick = { navigate(3) }) { Text("음성 기록") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { configure("content") }) { Text("안경 홈 화면") }
                     TextButton(onClick = { configure("teleprompter") }) { Text("프롬프터 원고함") }
-                    TextButton(onClick = { configure("agent-api") }) { Text("DSH Go 연결") }
+                    TextButton(onClick = { configure("agent-api") }) { Text("DSH Go") }
                 }
             }
         }

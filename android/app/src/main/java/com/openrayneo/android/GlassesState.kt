@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.openrayneo.android
 
-internal enum class AnswerSource { MOBILE_AGENT, COMPUTER_CODEX }
+internal enum class AnswerSource { MOBILE_AGENT, COMPUTER_CODEX, /** Anki cards shown on the answer page. */ FLASHCARD }
 internal data class AnswerRef(val source: AnswerSource, val taskId: Long)
 internal data class AnswerContent(val ref: AnswerRef, val question: String, val text: String, val page: Int = 0) {
     /** The glasses' answer window cuts text after roughly 120 characters: long answers are shown page by page. */

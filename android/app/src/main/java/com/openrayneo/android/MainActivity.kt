@@ -87,6 +87,8 @@ internal class MainActivity : ComponentActivity() {
                         exportRecording = { id -> exportRecord = id; exportAudio.launch("OpenRayneo-meeting-$id.wav") },
                         exportRecords = { ids, title -> model.pendingTextExport = ids to title; exportText.launch("OpenRayneo-${RecordExport.fileName(title)}.md") },
                         contact = { contact.launch(null) },
+                        calendarPermission = { permissions.launch(arrayOf(Manifest.permission.READ_CALENDAR)) },
+                        ankiPermission = { permissions.launch(arrayOf(AnkiDroid.PERMISSION)) },
                         locationPermission = { locationPermission.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)) },
                         scan = {
                             if (model.bluetoothAllowed) model.scan()
@@ -170,6 +172,8 @@ internal data class UiActions(
     /** Records as one Markdown file; the title names the file and, for several records, heads it. */
     val exportRecords: (List<String>, String) -> Unit,
     val contact: () -> Unit,
+    val calendarPermission: () -> Unit,
+    val ankiPermission: () -> Unit,
     val locationPermission: () -> Unit,
     val scan: () -> Unit,
     val notificationAccess: () -> Unit,

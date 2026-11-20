@@ -21,11 +21,12 @@ internal object CompanionTools {
         put(definition("device_brightness", "밝기를 변경하고 재조회. 전송 성공을 기기 변경 완료라고 말하지 말 것", listOf("value"), "value" to field("integer", "밝기 1~17")))
         put(definition("device_display", "화면 높이와 거리를 변경하고 재조회", listOf("height", "distance"),
             "height" to field("integer", "높이 1~6"), "distance" to field("integer", "거리 1~3")))
-        put(definition("todo_read", "안경의 미완료 목록과 휴대폰에 보관된 완료 항목 읽기"))
+        put(definition("todo_read", "휴대폰 할 일 목록 읽기(완료 항목 포함). 안경이 연결되면 안경 목록과 자동으로 맞춤"))
         put(definition("todo_add", "할 일 추가. 사용자가 명시적으로 요청한 경우에만", listOf("title"), "title" to field("string", "제목"), "important" to field("boolean", "중요 표시")))
         put(definition("todo_update", "조회로 얻은 ID로 할 일 수정. 완료 여부는 재조회 결과 기준", listOf("event_id"),
             "event_id" to field("integer", "실제 할 일 ID"), "title" to field("string", "새 제목"), "important" to field("boolean", "중요"), "completed" to field("boolean", "완료 또는 완료 취소")))
         put(definition("todo_delete", "사용자가 명시한 할 일 삭제. 먼저 읽어서 ID 확인", listOf("event_id"), "event_id" to field("integer", "실제 할 일 ID")))
+        put(definition("calendar_read", "휴대폰 캘린더(구글 캘린더 포함)의 오늘부터 7일 일정 읽기. 읽기 전용이며 추가·수정은 구글 캘린더 앱에서 해야 함"))
         put(definition("schedule_read", "안경 일정 읽기"))
         val scheduleFields = arrayOf("event_id" to field("integer", "수정 또는 삭제 시 실제 ID 사용"), "title" to field("string", "제목"),
             "start_time" to field("integer", "명확한 시작 시각의 Unix 초, 현재 시간대 기준"), "end_time" to field("integer", "명확한 종료 시각의 Unix 초"))

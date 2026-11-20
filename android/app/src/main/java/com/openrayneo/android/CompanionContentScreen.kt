@@ -22,73 +22,21 @@ internal fun CompanionContentScreen(model: AppModel) {
     val connected = model.state.glasses.link.phase == LinkPhase.FULL
     val editable = connected && !state.busy
     var page by rememberSaveable { mutableIntStateOf(0) }
-    var title by rememberSaveable { mutableStateOf("") }
-    var editId by rememberSaveable { mutableStateOf<Long?>(null) }
-    var start by rememberSaveable { mutableStateOf("") }
-    var end by rememberSaveable { mutableStateOf("") }
     var cityQuery by rememberSaveable { mutableStateOf("") }
-    val formatter = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("홈 화면 및 콘텐츠", style = MaterialTheme.typography.headlineSmall)
-        ToolButton(onClick = { model.attempt { model.service().content.refresh() } }, enabled = editable) { Text("안경 콘텐츠 읽기") }
-        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        Note(if (connected) state.notice else "먼저 안경을 연결하세요")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("레이아웃", "할 일", "일정", "날씨").forEachIndexed { i, name -> FilterChip(page == i, { page = i; editId = null; title = "" }, label = { Text(name) }) }
+            listOf("레이아웃", "일정", "날씨").forEachIndexed { i, name -> FilterChip(page == i, { page = i }, label = { Text(name) }) }
         }
+        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Note("할 일은 앱 홈에서 관리합니다. 안경이 연결되면 안경 할 일 목록과 자동으로 맞춥니다.")
         when (page) {
-            0 -> DashboardLayoutEditor(model)
-            1 -> {
-                state.todos.forEach { row ->
-                    OutlinedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
-                        Text(row.optString("title"), style = MaterialTheme.typography.titleMedium)
-                        Note(if (row.optString("syncState") == "outcome_unknown") "변경 결과 확인 대기" else if (row.optInt("status") == 1) "완료됨" else "미완료")
-                        Row {
-                            TextButton(onClick = { title = row.getString("title"); editId = row.getLong("eventID") }) { Text("편집") }
-                            TextButton(onClick = { model.attempt { model.service().content.run {
-                                model.service().content.todo("update", JSONObject().put("event_id", row.getLong("eventID")).put("completed", row.optInt("status") != 1))
-                            } } }, enabled = editable) { Text(if (row.optInt("status") == 1) "완료 취소" else "완료") }
-                            TextButton(onClick = { model.attempt { model.service().content.run {
-                                model.service().content.todo("delete", JSONObject().put("event_id", row.getLong("eventID")))
-                            } } }, enabled = editable) { Text("삭제") }
-                        }
-                    } }
-                }
-                OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("할 일 제목") })
-                ToolButton(onClick = { model.attempt { model.service().content.run {
-                    model.service().content.todo(if (editId == null) "add" else "update", JSONObject().put("title", title.trim()).apply { editId?.let { put("event_id", it) } })
-                } } }, enabled = editable && title.isNotBlank()) { Text(if (editId == null) "안경에 추가" else "할 일 저장") }
-                if (editId != null) TextButton(onClick = { editId = null; title = "" }) { Text("편집 종료") }
+            0 -> {
+                ToolOutlinedButton(onClick = { model.attempt { model.service().content.refresh() } }, enabled = editable) { Text("안경 홈 화면 읽기") }
+                Note(if (connected) state.notice else "먼저 안경을 연결하세요")
+                DashboardLayoutEditor(model)
             }
+            1 -> CalendarSettings(model, editable)
             2 -> {
-                state.schedules.forEach { row ->
-                    OutlinedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
-                        Text(row.optString("title"), style = MaterialTheme.typography.titleMedium)
-                        Note(java.time.Instant.ofEpochSecond(row.getLong("startTime")).atZone(ZoneId.systemDefault()).format(formatter) + " — " +
-                            java.time.Instant.ofEpochSecond(row.getLong("endTime")).atZone(ZoneId.systemDefault()).format(formatter))
-                        Row {
-                            TextButton(onClick = { title = row.getString("title"); editId = row.getLong("eventID")
-                                start = java.time.Instant.ofEpochSecond(row.getLong("startTime")).atZone(ZoneId.systemDefault()).format(formatter)
-                                end = java.time.Instant.ofEpochSecond(row.getLong("endTime")).atZone(ZoneId.systemDefault()).format(formatter)
-                            }) { Text("편집") }
-                            TextButton(onClick = { model.attempt { model.service().content.run {
-                                model.service().content.schedule("delete", JSONObject().put("event_id", row.getLong("eventID")))
-                            } } }, enabled = editable) { Text("삭제") }
-                        }
-                    } }
-                }
-                OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("일정 제목") })
-                OutlinedTextField(start, { start = it }, Modifier.fillMaxWidth(), label = { Text("시작: yyyy-MM-dd HH:mm") })
-                OutlinedTextField(end, { end = it }, Modifier.fillMaxWidth(), label = { Text("종료: yyyy-MM-dd HH:mm") })
-                ToolButton(onClick = { model.attempt {
-                    val args = JSONObject().put("title", title.trim()).put("start_time", LocalDateTime.parse(start, formatter).atZone(ZoneId.systemDefault()).toEpochSecond())
-                        .put("end_time", LocalDateTime.parse(end, formatter).atZone(ZoneId.systemDefault()).toEpochSecond())
-                    editId?.let { args.put("event_id", it) }
-                    model.service().content.run { model.service().content.schedule(if (editId == null) "add" else "update", args) }
-                } }, enabled = editable && title.isNotBlank() && start.isNotBlank() && end.isNotBlank()) { Text(if (editId == null) "안경에 추가" else "일정 저장") }
-                if (editId != null) TextButton(onClick = { editId = null; title = "" }) { Text("편집 종료") }
-            }
-            3 -> {
                 ToolButton(onClick = { model.attempt { val content = model.service().content
                     content.run { content.weather(content.currentCity()); content.pushWeather() }
                 } }, enabled = editable) { Text("현재 위치 날씨를 안경에 표시") }
@@ -140,4 +88,48 @@ private fun DashboardLayoutEditor(model: AppModel) {
     }
     Note("날씨는 먼저 날씨 탭에서 도시를 설정하세요. 세계 시계는 휴대폰의 현재 시간대를 사용합니다. 기존 주식·메일 위젯은 유지되며 데이터 소스는 원래 설정을 따릅니다.")
     ToolButton(onClick = { model.attempt { model.service().content.run { model.service().content.layout(mode, widgets) } } }, enabled = enabled) { Text("홈 레이아웃 적용") }
+}
+
+/** Which phone calendars feed the app and the glasses, plus what the glasses hold now. */
+@Composable
+private fun CalendarSettings(model: AppModel, editable: Boolean) {
+    val state = model.state.content
+    val formatter = remember { DateTimeFormatter.ofPattern("M/d HH:mm") }
+    if (!state.calendarAllowed) { Note("앱 홈의 일정 카드에서 캘린더 접근을 먼저 허용하세요."); return }
+    Note("휴대폰에 로그인된 구글 계정의 캘린더를 읽습니다(읽기 전용). 고른 캘린더의 일정이 앱 홈에 보이고, 오늘·내일 일정은 안경 일정에 들어갑니다.")
+    SectionLabel("보여 줄 캘린더")
+    if (state.calendars.isEmpty()) Note("휴대폰에 표시되는 캘린더가 없습니다. 구글 캘린더 앱에서 계정 동기화를 확인하세요.")
+    state.calendars.forEach { source ->
+        val checked = state.calendarSelection?.contains(source.id) ?: true
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Checkbox(checked, { on ->
+                val all = state.calendars.map { it.id }.toSet()
+                val next = (state.calendarSelection ?: all).let { if (on) it + source.id else it - source.id }
+                model.attempt { model.service().content.selectCalendars(next.takeIf { it != all }) }
+            })
+            Column { Text(source.name); Note(source.account) }
+        }
+    }
+    SectionLabel("안경으로 보내기")
+    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Switch(state.calendarToGlasses, { model.attempt { model.service().content.setCalendarToGlasses(it) } })
+        Spacer(Modifier.width(12.dp)); Text("오늘·내일 일정을 안경에 자동으로 보내기")
+    }
+    ToolOutlinedButton(onClick = { model.attempt { model.service().content.calendarTick(force = true) } }, enabled = editable) { Text("지금 안경에 보내기") }
+    if (state.calendarNotice.isNotBlank()) Note(state.calendarNotice)
+    if (state.schedules.isNotEmpty()) {
+        SectionLabel("지금 안경에 있는 일정")
+        state.schedules.sortedBy { it.optLong("startTime") }.forEach { row ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(row.optString("title"))
+                    Note(java.time.Instant.ofEpochSecond(row.optLong("startTime")).atZone(ZoneId.systemDefault()).format(formatter))
+                }
+                TextButton(onClick = { model.attempt { model.service().content.run {
+                    model.service().content.schedule("delete", JSONObject().put("event_id", row.getLong("eventID")))
+                } } }, enabled = editable) { Text("삭제") }
+            }
+        }
+        Note("구글 캘린더에서 온 일정을 여기서 지워도 다음 자동 전송 때 다시 들어갑니다.")
+    }
 }
