@@ -324,7 +324,7 @@ internal class CompanionContent(private val context: Context, private val reques
         val ids = items.map { it.getLong("eventID") }
         // The glasses' schedule widget shows "check calendar settings in mobile app" until the phone reports its calendar
         // access (official app: 0x16 type 9 pushAuthStatus, SyncCalendarPermissionMsg; authStatus 1 authorized,
-        // statusCode 0 refreshed). The bind fields are for Google/Microsoft accounts bound in the official app: none here.
+        // statusCode 0 refreshed).
         pushCalendarAuth()
         // Remember what is about to be sent first, so a lost reply is still replaced next time.
         check(local.edit().putString("calendarMapping", mapping.toString())
@@ -344,8 +344,10 @@ internal class CompanionContent(private val context: Context, private val reques
     /** Glasses thread. Unauthorized goes with statusCode 4 (noAvailableSource), as the official app's status codes read. */
     private fun pushCalendarAuth() {
         val authorized = state.calendarToGlasses && PhoneCalendar.allowed(context)
+        // The official serializer (libapp 0x18da890) writes eventType, authStatus and statusCode as enum int values and
+        // leaves the Google/Microsoft bind fields out when unset; their type is unknown, so they are not sent.
         requests.request(22, 9, JSONObject().put("eventType", 0).put("authStatus", if (authorized) 1 else 0)
-            .put("scheduleThirdPartyBindStatus", 0).put("todoThirdPartyBindStatus", 0).put("statusCode", if (authorized) 0 else 4), wait = false)
+            .put("statusCode", if (authorized) 0 else 4), wait = false)
     }
     /** The coming week of the phone's calendar for the assistant. */
     private fun calendarRead(): JSONObject {
