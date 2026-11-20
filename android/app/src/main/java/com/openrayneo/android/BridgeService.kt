@@ -178,6 +178,11 @@ internal class BridgeService : Service() {
         requests.observe = { protocol, type, body ->
             when (protocol) { 15 -> deviceSettings.observe(type, body); 22 -> content.observe(type, body) }
             // The glasses' teleprompter requests are not mapped from a real device yet: log the first of each kind.
+            // Schedule/to-do frames from the glasses other than query replies: the calendar widget's state is not mapped yet.
+            if (protocol == 0x16 && type != 16) {
+                val count = glassesRequestSeen.merge("$protocol:$type", 1, Int::plus) ?: 1
+                if (count <= 8) onLog("안경 일정/할 일 신호 수신: 0x16 type=$type ${body.toString().take(300)}")
+            }
             if (protocol == 0x14 && body.optInt("action") == 1) {
                 val key = "$protocol:$type"
                 val count = glassesRequestSeen.merge(key, 1, Int::plus) ?: 1
