@@ -86,6 +86,10 @@ internal class CompanionContent(private val context: Context, private val reques
         val added = widgets.filter { id -> id !in previous.optJSONArray("widgets").ints() }
         if (1 in added && state.weather != null) pushWeather()
         if (6 in added) pushClock()
+        // Adding the schedule widget: the official app sends the permission state, then the schedule batch.
+        // A failure here must not turn the applied layout into an error; the tick sends the calendar again.
+        if (3 in added) runCatching { if (state.calendarAllowed && state.calendarToGlasses) syncCalendar() else pushCalendarAuth() }
+            .onFailure { log("일정 위젯 추가 후 일정 보내기 실패: ${it.message}"); ui.post { calendarChanged = true } }
         val actual = dashboard()
         val same = actual.optInt("simple_mode") == mode && actual.optJSONArray("widgets").ints() == widgets
         return JSONObject().put("readBack", same).put("config", actual).put("message", if (same) "홈 레이아웃이 재조회로 확인됨" else "기기 레이아웃이 요청과 다릅니다. 위젯 콘텐츠가 설정되었는지 확인하세요")
@@ -309,17 +313,22 @@ internal class CompanionContent(private val context: Context, private val reques
         val existing = events(0)
         val previous = JSONArray(local.getString("calendarImported:$deviceId", "[]")).longs().toSet()
         val used = (existing.map { it.getLong("eventID") } + oldMapping.keys().asSequence().map { oldMapping.getLong(it) }).toMutableSet()
-        val mapping = JSONObject(); var next = now
+        // 32-bit IDs like the official app's, kept in a high range away from its phone calendar row IDs; earlier millisecond
+        // IDs are replaced once. A kept ID that another writer now uses on the glasses is given up.
+        val base = 1_900_000_000L
+        val mapping = JSONObject(); var next = base
         val items = occurrences.map { event ->
-            val id = if (oldMapping.has(event.key)) oldMapping.getLong(event.key) else { while (next in used) next++; next.also { used += it; next++ } }
+            val id = oldMapping.optLong(event.key).takeIf { it in base..Int.MAX_VALUE && (it in previous || existing.none { row -> row.getLong("eventID") == it }) }
+                ?: kotlin.run { while (next in used) next++; next.also { used += it; next++ } }
             mapping.put(event.key, id)
             // Started before today (multi-day): show it from today, the glasses list only today and tomorrow.
             val start = maxOf(event.begin, PhoneCalendar.dayStart()) / 1000; val end = maxOf(event.end / 1000, start + 60)
             val instant = Instant.ofEpochSecond(start)
-            JSONObject().put("eventType", 0).put("eventID", id).put("status", 0).put("eventSource", 0).put("createTime", now)
-                .put("title", event.title).put("startTime", start).put("endTime", end).put("localTimeOffset", zone.rules.getOffset(instant).totalSeconds)
-                .put("isTomorrowSchedule", instant.atZone(zone).toLocalDate() == LocalDate.now(zone).plusDays(1)).put("lastModifiedTime", now)
-                .apply { if (event.location.isNotBlank()) put("location", event.location) }
+            // Field order and the always-present location/isAllDay follow the official app's batch.
+            JSONObject().put("eventType", 0).put("eventID", id).put("createTime", now).put("title", event.title)
+                .put("startTime", start).put("endTime", end).put("location", event.location)
+                .put("isTomorrowSchedule", instant.atZone(zone).toLocalDate() == LocalDate.now(zone).plusDays(1)).put("isAllDay", event.allDay)
+                .put("status", 0).put("localTimeOffset", zone.rules.getOffset(instant).totalSeconds).put("lastModifiedTime", now).put("eventSource", 0)
         }
         val ids = items.map { it.getLong("eventID") }
         // The glasses' schedule widget shows "check calendar settings in mobile app" until the phone reports its calendar
@@ -344,10 +353,11 @@ internal class CompanionContent(private val context: Context, private val reques
     /** Glasses thread. Unauthorized goes with statusCode 4 (noAvailableSource), as the official app's status codes read. */
     private fun pushCalendarAuth() {
         val authorized = state.calendarToGlasses && PhoneCalendar.allowed(context)
-        // The official serializer (libapp 0x18da890) writes eventType, authStatus and statusCode as enum int values and
-        // leaves the Google/Microsoft bind fields out when unset; their type is unknown, so they are not sent.
+        // Same keys, order and values as the official app's frames (snoop capture 2026-11-20).
         requests.request(22, 9, JSONObject().put("eventType", 0).put("authStatus", if (authorized) 1 else 0)
-            .put("statusCode", if (authorized) 0 else 4), wait = false)
+            .put("scheduleThirdPartyBindStatus", 0).put("statusCode", if (authorized) 0 else 4), wait = false)
+        // The official app sends the to-do counterpart alongside every time.
+        requests.request(22, 9, JSONObject().put("eventType", 1).put("todoThirdPartyBindStatus", 0).put("statusCode", 0), wait = false)
     }
     /** The coming week of the phone's calendar for the assistant. */
     private fun calendarRead(): JSONObject {

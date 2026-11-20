@@ -62,7 +62,10 @@ internal object ProtocolCodec {
 
     fun display(protocol: Int, sequence: Int, type: Int, json: String, binary: ByteArray? = null): ByteArray {
         val bytes = json.toByteArray(Charsets.UTF_8)
-        return frame(protocol, sequence, byteArrayOf(8, 1, 16) + varint(type) + byteArrayOf(26) + varint(bytes.size) + bytes + (binary?.let { byteArrayOf(34) + varint(it.size) + it } ?: byteArrayOf()))
+        // Schedule/to-do (0x16): the official app always ends the message with an empty field 4 and fields 5 = 0, 6 = 0
+        // (snoop capture 2026-11-20); the calendar widget's permission message is copied byte for byte.
+        val tail = binary?.let { byteArrayOf(34) + varint(it.size) + it } ?: if (protocol == 0x16) byteArrayOf(34, 0, 40, 0, 48, 0) else byteArrayOf()
+        return frame(protocol, sequence, byteArrayOf(8, 1, 16) + varint(type) + byteArrayOf(26) + varint(bytes.size) + bytes + tail)
     }
 
     data class Message(val type: Int, val json: String?, val audio: ByteArray?)
