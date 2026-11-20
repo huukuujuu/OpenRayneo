@@ -21,8 +21,6 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 adb shell am start -n com.openrayneo.android/.MainActivity
 ```
 
-시험용은 `./gradlew :app:assembleDev`로 dev 빌드(`com.openrayneo.android.dev`, 이름 "OpenRayneo Dev", 같은 서명, debuggable)를 만든다. 패키지가 달라 매일 쓰는 앱과 따로 설치되고 데이터, 설정, 기록, API 키도 따로다. 안경은 한 번에 한 앱만 연결할 수 있고, Amap 알림 접근은 한쪽에만 켠다. dev의 기본 로컬 포트는 8776(어시스턴트)/8777(기록 동기화)이다. `/sdcard/OpenRayneo/models/`는 두 앱이 함께 쓰므로 같은 모델을 동시에 내려받지 않는다. debuggable이라 dev의 속도와 지연은 매일 앱과 다르다. CI는 `openrayneo-dev-<버전>-<커밋>.apk`도 함께 올린다. dev 로그는 `adb pull /sdcard/Android/data/com.openrayneo.android.dev/files/logs`로 가져온다.
-
 기본 Gradle 출력은 다음 빌드 때 새로 만들어진다. 고정 배포물은 `outputs/candidates/<버전>/`에 둔다. 덮어 설치를 위해 원래 개발 서명 `~/.android/debug.keystore`를 보관하며, 문서나 소스에 비밀번호를 쓰지 않는다. 시스템이 ADB 설치를 막으면 APK를 휴대폰 Download 폴더로 보낸 뒤 사용자가 직접 설치한다.
 
 ## 개발 검증 명령

@@ -27,7 +27,7 @@ internal fun AgentServerScreen(model: AppModel, requestBluetoothPermission: () -
         Note("어시스턴트 채팅과 음성 질문은 휴대폰 어시스턴트가 받아 DSH Go 플러그인에 넘깁니다. 답변 방식, 도구 승인, 휴대폰 조작은 DSH Go가 맡고, 답변은 이 앱과 안경에 표시됩니다.")
         Note("안경과의 블루투스 연결은 휴대폰이 유지하고, DSH Go 같은 프로그램이 이 연결을 통해 안경을 다룹니다. 기본은 꺼짐입니다. 켜면 토큰을 가진 휴대폰 안의 프로그램이 기록을 읽고 안경 화면을 바꿀 수 있습니다.")
         Note(state.notice)
-        var port by remember(model.config.optString("localAgentPort")) { mutableStateOf(model.config.optString("localAgentPort", BuildConfig.AGENT_PORT.toString())) }
+        var port by remember(model.config.optString("localAgentPort")) { mutableStateOf(model.config.optString("localAgentPort", "8766")) }
         if (!state.enabled) {
             OutlinedTextField(port, { port = it.filter(Char::isDigit) }, label = { Text("로컬 포트") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)

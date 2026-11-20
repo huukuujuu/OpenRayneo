@@ -178,8 +178,7 @@ internal class BridgeService : Service() {
         conversations.partial = { text, wake -> main.post { voiceTransport.partial(text, wake) } }
         conversations.livePartial = { channel, text -> main.post { heard(channel, text, final = false) } }
         recordSync = RecordSyncServer(settings, conversations.repository, conversations.recordings, main, ::notifyUI, ::logText)
-        // A port held by the other install (daily vs dev) must not crash the service at start.
-        if (settings.read().optBoolean("recordSyncEnabled")) runCatching { recordSync.start() }.onFailure { onLog("기록 동기화 시작 실패: ${it.message}") }
+        if (settings.read().optBoolean("recordSyncEnabled")) recordSync.start()
         voiceAudio = PromptAudio { left, right ->
             if (virtualVoice.active) return@PromptAudio
             if (bargeMeter.feed(left)) main.post { voiceTransport.voiceDuringAnswer() }
@@ -230,7 +229,7 @@ internal class BridgeService : Service() {
         navigation.stop()
         navigation.observers.add(navigationObserver)
         agent = MobileAgent(settings, conversations.repository, { question, answer, input -> deliverExternalVoice(question, answer, input) }, ::notifyUI, { name, args, allowed, completion -> requests.withPermission(allowed) { executeTool(name, args, completion) } }) { question, answer -> completed(AnswerSource.MOBILE_AGENT, question, answer) }
-        if (settings.read().optBoolean("localAgentEnabled")) runCatching { agentServer.start() }.onFailure { onLog("휴대폰 어시스턴트 시작 실패: ${it.message}") }
+        if (settings.read().optBoolean("localAgentEnabled")) agentServer.start()
         codex = CodexClient(settings, ::notifyUI) { question, answer -> completed(AnswerSource.COMPUTER_CODEX, question, answer) }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel("bridge", "안경 연결 및 내비게이션", NotificationManager.IMPORTANCE_LOW))

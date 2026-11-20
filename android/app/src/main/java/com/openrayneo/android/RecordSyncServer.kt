@@ -42,7 +42,7 @@ internal class RecordSyncServer(private val settings: AppSettings, private val r
         token = config.optString("recordSyncToken").ifBlank {
             Base64.encodeToString(ByteArray(32).also { SecureRandom().nextBytes(it) }, Base64.NO_WRAP or Base64.URL_SAFE)
         }
-        val server = ServerSocket(config.optInt("recordSyncPort", BuildConfig.SYNC_PORT), 8, InetAddress.getByName("0.0.0.0"))
+        val server = ServerSocket(config.optInt("recordSyncPort", 8767), 8, InetAddress.getByName("0.0.0.0"))
         socket = server
         config.put("recordSyncToken", token).put("recordSyncEnabled", true); settings.save(config)
         state = AgentServerState(true, server.localPort, "컴퓨터 근거리 동기화 대기 중 · 오디오는 필요할 때만 전송"); changed()
