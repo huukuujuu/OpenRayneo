@@ -30,8 +30,12 @@ internal class RecordSyncServer(private val settings: AppSettings, private val r
     @Volatile private var token = ""
     @Volatile var state = AgentServerState(notice = "근거리 동기화가 꺼져 있음"); private set
     fun tokenForUser() = token
+    /** Reachable first: Wi-Fi LAN, then Tailscale (100.64/10); 192.0.0.x is the carrier's internal (CLAT) address, never reachable. */
     fun addresses(): List<String> = NetworkInterface.getNetworkInterfaces().toList().flatMap { it.inetAddresses.toList() }
-        .filter { !it.isLoopbackAddress && it is java.net.Inet4Address }.map { "http://${it.hostAddress}:${state.port}" }
+        .filter { !it.isLoopbackAddress && it is java.net.Inet4Address && !it.hostAddress.orEmpty().startsWith("192.0.0.") }
+        .sortedBy { val a = it.address.map { b -> b.toInt() and 0xff }
+            when { it.isSiteLocalAddress -> 0; a[0] == 100 && a[1] in 64..127 -> 1; else -> 2 } }
+        .map { "http://${it.hostAddress}:${state.port}" }
     fun start() {
         if (socket != null) return
         val config = settings.read()
