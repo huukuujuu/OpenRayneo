@@ -12,9 +12,11 @@ import java.util.concurrent.Executors
 /**
  * The app log on disk, so a whole device test survives app restarts and can be shared or fetched by the PC.
  * Two files of at most 1 MB each (current + previous). Writes, rotation and reads all run on one thread.
+ * They live in the app's own external folder so a USB-connected PC can pull them without a share step:
+ * `adb pull /sdcard/Android/data/com.openrayneo.android/files/logs` (other apps cannot read it; removed on uninstall).
  */
 internal class AppLogFile(context: Context) {
-    private val folder = File(context.filesDir, "logs").apply { mkdirs() }
+    private val folder = (context.getExternalFilesDir("logs") ?: File(context.filesDir, "logs")).apply { mkdirs() }
     private val current = File(folder, "app.log")
     private val previous = File(folder, "app.log.1")
     private val writer = Executors.newSingleThreadExecutor { Thread(it, "app-log").apply { isDaemon = true } }
