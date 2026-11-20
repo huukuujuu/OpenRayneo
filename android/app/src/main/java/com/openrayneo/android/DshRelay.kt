@@ -18,6 +18,9 @@ internal class DshRelay(private val main: Handler, private val repository: Conve
     }
     private val lock = Object()
     private val requests = linkedMapOf<String, Request>()
+    /** DSH Go long-polls [next] every 20 s while its runtime runs; a busy one (all slots full) still reports status/updates. Neither for longer means nothing will take new work. */
+    @Volatile private var lastPoll = 0L
+    fun online() = System.currentTimeMillis() - lastPoll < 45_000
     init {
         val saved = repository.readAgentOutbox()
         repeat(saved.length()) { index ->
@@ -60,6 +63,7 @@ internal class DshRelay(private val main: Handler, private val repository: Conve
         }, remaining)
     }
     fun next(authorized: () -> Boolean): JSONObject {
+        lastPoll = System.currentTimeMillis()
         val deadline = System.currentTimeMillis() + 20_000
         synchronized(lock) {
             while (authorized() && requests.values.none { it.state == "queued" }) {
@@ -80,10 +84,12 @@ internal class DshRelay(private val main: Handler, private val repository: Conve
             .put("backfill", request.input?.optBoolean("backfill") ?: false)
     }) }
     fun status(id: String): JSONObject = synchronized(lock) {
+        lastPoll = System.currentTimeMillis()
         val request = requests[id]
         JSONObject().put("id", id).put("state", request?.state ?: "cancelled").put("sessionId", request?.session.orEmpty())
     }
     fun update(id: String, body: JSONObject): JSONObject = synchronized(lock) {
+        lastPoll = System.currentTimeMillis()
         val request = checkNotNull(requests[id]) { "DSH 요청이 만료됨" }
         if (request.state == "completed" && body.optString("state") == "completed") return status(id)
         check(request.state == "running") { "DSH 요청이 종료되었거나 취소됨" }

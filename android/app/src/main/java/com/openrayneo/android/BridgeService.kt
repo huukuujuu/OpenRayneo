@@ -509,6 +509,18 @@ internal class BridgeService : Service() {
         if (request.source == ConversationSource.NATIVE && !request.backfill) {
             input.put("phoneId", identity.getString("phoneId")).put("conversationKey", identity.getString("conversationKey"))
         }
+        // A live question asked while DSH Go is not running would wait in the outbox and come back minutes later as a burst
+        // of notifications: say so now instead. Backfill and the all-day record still queue for later.
+        if (!request.backfill && request.source in setOf(ConversationSource.NATIVE, ConversationSource.REALTIME) && !agent.harness.online()) {
+            val wake = request.wakeId
+            if (offlineNotice != (wake ?: "realtime:${request.recordId}")) {
+                offlineNotice = wake ?: "realtime:${request.recordId}"
+                onLog("DSH Go가 실행 중이 아니라 음성 질문에 답할 수 없습니다. 휴대폰에서 DSH Go를 여세요")
+                if (request.source == ConversationSource.NATIVE && wake != null) voiceTransport.reply(DSH_OFFLINE, request.text, wake)
+            }
+            return null
+        }
+        input.put("submittedAt", System.currentTimeMillis())
         var context = request.context
         if (request.source == ConversationSource.REALTIME) {
             // Live answers suggests replies to what others ask the wearer; the app's realtime hint answers only the wearer.
@@ -549,7 +561,9 @@ internal class BridgeService : Service() {
             val ref = AnswerRef(AnswerSource.MOBILE_AGENT, input.getLong("realtimeRequest"))
             shownRealtimeRequest = ref.taskId
             dispatch(GlassesEvent.StandbyAnswer(AnswerContent(ref, question, answer)))
-        } else if (state.link.phase == LinkPhase.FULL && !state.disconnecting) connection.sendNotification("어시스턴트", answer)
+        } else if (source != ConversationSource.REALTIME && System.currentTimeMillis() - input.optLong("submittedAt") < LATE_ANSWER_MS &&
+            state.link.phase == LinkPhase.FULL && !state.disconnecting) connection.sendNotification("어시스턴트", answer)
+        // A hint for a closed page or an answer that waited too long stays only in the record.
     }
     fun pausePrompt() { conversations.stop(); dispatch(GlassesEvent.PauseDisplay) }
     fun startTranslation(captions: Boolean = false, glassesPage: Boolean = false) {
@@ -663,6 +677,7 @@ internal class BridgeService : Service() {
     /** One-tap realtime hint: open the window and start the realtime dual-mic record that actually processes speech. */
     /** The running realtime record was opened by the glasses' Live answers menu (its own prompts in DSH), not the app button. */
     private var liveAnswers = false
+    private var offlineNotice: String? = null
     /** Main thread: the next REALTIME record is the glasses' Live answers. */
     private var liveAnswersNext = false
     fun startRealtimeHint(fromGlasses: Boolean = false) {
@@ -993,6 +1008,9 @@ internal class BridgeService : Service() {
 }
 
 internal const val DEFAULT_ANSWER_MAX_CHARS = 60
+/** Past this, a voice answer whose glasses window has closed is not pushed as a notification. */
+internal const val LATE_ANSWER_MS = 120_000L
+internal const val DSH_OFFLINE = "DSH Go가 꺼져 있어 지금은 답할 수 없습니다. 휴대폰에서 DSH Go를 열어 주세요."
 /** Seconds of silence before the wake assistant popup on the glasses is closed (setting nativeIdleCloseSeconds). */
 internal const val DEFAULT_NATIVE_IDLE_CLOSE_SECONDS = 15
 private const val ANSWER_PAGE_MS = 7_000L
