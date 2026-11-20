@@ -45,6 +45,7 @@ internal class CompanionContent(private val context: Context, private val reques
         update { it.copy(automaticWeather = local.getBoolean("weatherAutomatic:$id", false),
             weather = local.getString("weatherCard:$id", null)?.let(::JSONObject)) }; changed()
         automaticWeather()
+        restoreLayout(id)
         syncTodosLater()
         calendarChanged = true; calendarTick()
         // Without calendar access no sync runs; still tell the glasses, as the official app does on every refresh.
@@ -81,6 +82,19 @@ internal class CompanionContent(private val context: Context, private val reques
         val config = if (raw is JSONObject) raw else JSONObject(raw.toString())
         update { it.copy(dashboard = config) }; return config
     }
+    /**
+     * The glasses fall back to their default home (to-do only) when another app has been connected (seen 2026-11-20:
+     * the official app's five widgets were gone after OpenRayneo reconnected). Put back the layout last set here.
+     */
+    private fun restoreLayout(deviceId: String) {
+        val saved = local.getString("layout:$deviceId", null)?.let(::JSONObject) ?: return
+        execute({
+            val current = dashboard()
+            val widgets = saved.getJSONArray("widgets").ints(); val mode = saved.getInt("simple_mode")
+            if (current.optInt("simple_mode") == mode && current.optJSONArray("widgets").ints() == widgets) JSONObject()
+            else layout(mode, widgets).also { log("안경 홈 위젯을 휴대폰에 저장된 구성으로 되돌림: ${it.optString("message")}") }
+        }) { result -> result.exceptionOrNull()?.let { log("안경 홈 위젯 되돌리기 실패: ${it.message}") } }
+    }
     fun layout(mode: Int, widgets: List<Int>): JSONObject {
         require(mode in 0..2 && widgets.size in 1..5 && widgets.distinct().size == widgets.size)
         val previous = dashboard()
@@ -94,6 +108,7 @@ internal class CompanionContent(private val context: Context, private val reques
             .onFailure { log("일정 위젯 추가 후 일정 보내기 실패: ${it.message}"); ui.post { calendarChanged = true } }
         val actual = dashboard()
         val same = actual.optInt("simple_mode") == mode && actual.optJSONArray("widgets").ints() == widgets
+        if (same) address()?.let { id -> local.edit().putString("layout:$id", JSONObject().put("simple_mode", mode).put("widgets", JSONArray(widgets)).toString()).apply() }
         return JSONObject().put("readBack", same).put("config", actual).put("message", if (same) "홈 레이아웃이 재조회로 확인됨" else "기기 레이아웃이 요청과 다릅니다. 위젯 콘텐츠가 설정되었는지 확인하세요")
     }
     fun events(eventType: Int): List<JSONObject> {

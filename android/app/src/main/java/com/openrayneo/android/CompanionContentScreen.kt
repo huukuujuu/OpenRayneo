@@ -206,7 +206,8 @@ private fun CalendarSettings(model: AppModel, editable: Boolean) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(row.optString("title"))
-                    Note(java.time.Instant.ofEpochSecond(row.optLong("startTime")).atZone(ZoneId.systemDefault()).format(formatter))
+                    val start = java.time.Instant.ofEpochSecond(row.optLong("startTime")).atZone(ZoneId.systemDefault())
+                    Note(if (row.optBoolean("isAllDay")) start.format(DateTimeFormatter.ofPattern("M/d")) + " 종일" else start.format(formatter))
                 }
                 TextButton(onClick = { model.attempt { model.service().content.run {
                     model.service().content.schedule("delete", JSONObject().put("event_id", row.getLong("eventID")))

@@ -76,7 +76,7 @@ internal fun GlassesSettingsScreen(model: AppModel) {
                 if (current != null && currentAngle != null && currentCrown != null) {
                     var enabled by remember(current) { mutableStateOf(current) }; var angle by remember(currentAngle) { mutableIntStateOf(currentAngle) }
                     var crown by remember(currentCrown) { mutableIntStateOf(currentCrown) }
-                    SettingsSection("절전 설정") {
+                    SettingsSection("Head-Up 및 화면 꺼짐") {
                         SettingsToggle("Head-Up 디스플레이 (고개를 들면 화면 켜기)", enabled, editable) { enabled = it }
                         Text("Head-Up 각도 $angle°"); Slider(angle.coerceIn(0, 70).toFloat(), { angle = it.toInt() }, valueRange = 0f..70f, enabled = editable && enabled)
                         TextButton(onClick = { angle = 20 }, enabled = editable && angle != 20) { Text("기본 각도(20°) 복원") }
