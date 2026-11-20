@@ -45,6 +45,8 @@ internal class CompanionContent(private val context: Context, private val reques
         automaticWeather()
         syncTodosLater()
         calendarChanged = true; calendarTick()
+        // Without calendar access no sync runs; still tell the glasses, as the official app does on every refresh.
+        if (!state.calendarAllowed) execute({ pushCalendarAuth(); JSONObject() }) {}
     }
     fun setAutomaticWeather(enabled: Boolean) {
         check(local.edit().putBoolean("weatherAutomatic:" + device(), enabled).commit())
@@ -320,6 +322,10 @@ internal class CompanionContent(private val context: Context, private val reques
                 .apply { if (event.location.isNotBlank()) put("location", event.location) }
         }
         val ids = items.map { it.getLong("eventID") }
+        // The glasses' schedule widget shows "check calendar settings in mobile app" until the phone reports its calendar
+        // access (official app: 0x16 type 9 pushAuthStatus, SyncCalendarPermissionMsg; authStatus 1 authorized,
+        // statusCode 0 refreshed). The bind fields are for Google/Microsoft accounts bound in the official app: none here.
+        pushCalendarAuth()
         // Remember what is about to be sent first, so a lost reply is still replaced next time.
         check(local.edit().putString("calendarMapping", mapping.toString())
             .putString("calendarImported:$deviceId", JSONArray((previous + ids).toList()).toString()).commit())
@@ -334,6 +340,12 @@ internal class CompanionContent(private val context: Context, private val reques
                 !state.calendarToGlasses -> if (confirmed) "안경에서 캘린더 일정을 뺐습니다" else "안경에서 캘린더 일정을 빼는 중입니다"
                 confirmed -> "오늘·내일 일정 ${items.size}개를 안경에 보냈습니다"
                 else -> "일정을 보냈지만 안경 목록에서 아직 확인되지 않았습니다. 잠시 뒤 다시 보냅니다" })
+    }
+    /** Glasses thread. Unauthorized goes with statusCode 4 (noAvailableSource), as the official app's status codes read. */
+    private fun pushCalendarAuth() {
+        val authorized = state.calendarToGlasses && PhoneCalendar.allowed(context)
+        requests.request(22, 9, JSONObject().put("eventType", 0).put("authStatus", if (authorized) 1 else 0)
+            .put("scheduleThirdPartyBindStatus", 0).put("todoThirdPartyBindStatus", 0).put("statusCode", if (authorized) 0 else 4), wait = false)
     }
     /** The coming week of the phone's calendar for the assistant. */
     private fun calendarRead(): JSONObject {
