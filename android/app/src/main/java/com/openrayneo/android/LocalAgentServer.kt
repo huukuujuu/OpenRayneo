@@ -44,7 +44,7 @@ internal class LocalAgentServer(private val main: Handler, private val settings:
             }
         }
         config.put("localAgentEnabled", true); settings.save(config)
-        val server = ServerSocket(config.optInt("localAgentPort", 8766), 8, InetAddress.getByName("127.0.0.1")); socket = server
+        val server = ServerSocket(config.optInt("localAgentPort", BuildConfig.AGENT_PORT), 8, InetAddress.getByName("127.0.0.1")); socket = server
         state = AgentServerState(true, server.localPort, "로컬에서만 수신 · 요청에는 전용 Bearer 토큰 필요"); changed()
         network.execute {
             try { while (!server.isClosed) { val client = server.accept(); if (!slots.tryAcquire()) client.close() else {

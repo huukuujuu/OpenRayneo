@@ -51,12 +51,13 @@ jobs:
       - name: Set version
         run: echo "OPENRAYNEO_VERSION_NAME=1.$((GITHUB_RUN_NUMBER - 23)).0" >> "$GITHUB_ENV"
 
-      - name: Build release APK
+      # Release is the daily app; dev (com.openrayneo.android.dev, "OpenRayneo Dev") installs next to it for testing.
+      - name: Build release and dev APKs
         working-directory: android
         run: |
           # Surface compiler/lint errors as annotations so they are readable without opening the raw log.
           set -o pipefail
-          ./gradlew :app:assembleRelease --console=plain 2>&1 | tee "$RUNNER_TEMP/gradle.log" || {
+          ./gradlew :app:assembleRelease :app:assembleDev --console=plain 2>&1 | tee "$RUNNER_TEMP/gradle.log" || {
             # One annotation (GitHub keeps only a few per step); newlines encoded as %0A.
             msg=$( { grep -E '^e: |error:' "$RUNNER_TEMP/gradle.log"; grep -A12 'What went wrong' "$RUNNER_TEMP/gradle.log"; } | grep -v '^> Task' | head -50 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::error::$msg"
@@ -66,7 +67,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: openrayneo-android-${{ github.sha }}
-          path: android/app/build/outputs/apk/release/*.apk
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/dev/*.apk
           if-no-files-found: error
 
       - name: Pack DSH Go plugin
@@ -90,5 +93,6 @@ jobs:
             echo "Uploaded $2"
           }
           upload android/app/build/outputs/apk/release/app-release.apk "openrayneo-$version-$short.apk"
+          upload android/app/build/outputs/apk/dev/app-dev.apk "openrayneo-dev-$version-$short.apk"
           plugin=$(node -p "require('./integrations/dsh-go/package.json').version")
           upload "$RUNNER_TEMP"/openrayneo-dsh-*.tgz "openrayneo-dsh-$plugin-$short.tgz"

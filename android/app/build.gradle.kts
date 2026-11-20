@@ -19,6 +19,10 @@ android {
         versionName = System.getenv("OPENRAYNEO_VERSION_NAME") ?: "1.2.0-beta.4"
         buildConfigField("String", "GIT_COMMIT", "\"" + (System.getenv("GITHUB_SHA")?.take(7) ?: "local") + "\"")
         ndk { abiFilters += providers.gradleProperty("openrayneo.abis").orElse("arm64-v8a").get().split(',') }
+        manifestPlaceholders["appLabel"] = "OpenRayneo"
+        // Default local ports; dev uses others so it can run next to the daily app (settings still override).
+        buildConfigField("int", "AGENT_PORT", "8766")
+        buildConfigField("int", "SYNC_PORT", "8767")
     }
     // CI names the fixed key file explicitly; relying on the default ~/.android location signed every build differently.
     val fixedKey = System.getenv("OPENRAYNEO_KEYSTORE")?.let(::file)
@@ -35,6 +39,17 @@ android {
             // Direct-distribution Beta keeps one certificate so every APK installs over the previous one.
             signingConfig = signingConfigs.getByName(if (fixedKey != null) "fixed" else "debug")
             isDebuggable = false
+        }
+        // Test build next to the daily app: own package (own data, settings, records), same key, debuggable for run-as.
+        // Only one of the two can hold the glasses at a time.
+        create("dev") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            isDebuggable = true
+            manifestPlaceholders["appLabel"] = "OpenRayneo Dev"
+            buildConfigField("int", "AGENT_PORT", "8776")
+            buildConfigField("int", "SYNC_PORT", "8777")
         }
     }
     compileOptions {
