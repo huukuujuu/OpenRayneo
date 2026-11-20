@@ -28,7 +28,7 @@ jobs:
       - name: Install Android SDK Platform 36 / Build-Tools 36.0.0
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" > /dev/null
 
-      # Optional: reuse the existing signing key so CI builds upgrade in place.
+      # Every build must use the same key, or the phone refuses the APK as an update (uninstall = data loss).
       # Store base64 of ~/.android/debug.keystore as repository secret ANDROID_DEBUG_KEYSTORE_B64.
       - name: Restore signing keystore
         env:
@@ -41,7 +41,8 @@ jobs:
             keytool -list -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey > /dev/null
             echo "Using provided signing keystore"
           else
-            echo "No keystore secret; a fresh debug key will sign this build"
+            echo "::error::ANDROID_DEBUG_KEYSTORE_B64 secret is missing; a fresh key would make the APK uninstallable as an update"
+            exit 1
           fi
 
       - uses: gradle/actions/setup-gradle@v4
