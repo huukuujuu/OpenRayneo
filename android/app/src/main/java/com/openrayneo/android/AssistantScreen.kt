@@ -69,7 +69,7 @@ internal fun AssistantScreen(model: AppModel, actions: UiActions, configure: (St
                     bottomStart = 8.dp,
                 ),
             ) {
-                Text(if (s.phoneRunning) "로컬 Agent · 처리 중" else "로컬 Agent")
+                Text(if (s.phoneRunning) "휴대폰 어시스턴트 · 처리 중" else "휴대폰 어시스턴트")
             }
             SegmentedButton(
                 !mobile,
@@ -91,7 +91,7 @@ internal fun AssistantScreen(model: AppModel, actions: UiActions, configure: (St
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                if (mobile && configured && question.isBlank() && !running) "작업은 로컬 Agent가 처리 · DSH Go 플러그인을 계속 실행해 두세요"
+                if (mobile && configured && question.isBlank() && !running) "휴대폰 어시스턴트가 답합니다 · DSH Go 플러그인을 켜 두세요"
                 else status,
                 Modifier.weight(1f),
                 style = MaterialTheme.typography.labelMedium,
@@ -121,15 +121,15 @@ internal fun AssistantScreen(model: AppModel, actions: UiActions, configure: (St
                             tint = MaterialTheme.colorScheme.primary,
                         )
                         Text(
-                            if (mobile) "로컬 Agent 엔드포인트를 활성화하세요" else "컴퓨터가 아직 설정되지 않음",
+                            if (mobile) "휴대폰 어시스턴트를 켜 주세요" else "컴퓨터가 아직 설정되지 않음",
                             style = MaterialTheme.typography.headlineSmall,
                         )
                         Note(
-                            if (mobile) "로컬 엔드포인트를 활성화하고 DSH Go에서 안경을 연결하세요. 답변, 짧은 힌트, 작업은 로컬 Agent가 처리합니다."
+                            if (mobile) "휴대폰 어시스턴트를 켜고 DSH Go에서 안경과 연결하세요. 답변, 짧은 힌트, 작업을 휴대폰에서 처리합니다."
                             else "컴퓨터의 Codex에 연결해 작업 진행 상황을 보고, 여기서 승인하고 답변을 받습니다."
                         )
                         ToolButton(onClick = { configure(if (mobile) "agent-api" else "computer") }) {
-                            Text(if (mobile) "로컬 Agent 설정" else "컴퓨터 연결 설정")
+                            Text(if (mobile) "휴대폰 어시스턴트 설정" else "컴퓨터 연결 설정")
                         }
                     }
                 }
@@ -240,7 +240,7 @@ internal fun AssistantScreen(model: AppModel, actions: UiActions, configure: (St
                         draft,
                         { if (mobile) model.phoneDraft = it else model.computerDraft = it },
                         Modifier.weight(1f),
-                        placeholder = { Text(if (mobile) "로컬 Agent에게 맡길 작업…" else "컴퓨터에 맡길 작업…") },
+                        placeholder = { Text(if (mobile) "맡길 일을 적어 주세요…" else "컴퓨터에 맡길 작업…") },
                         maxLines = 5,
                         shape = MaterialTheme.shapes.large,
                     )
@@ -262,7 +262,7 @@ internal fun AssistantScreen(model: AppModel, actions: UiActions, configure: (St
                         ) {
                             Icon(
                                 Icons.AutoMirrored.Outlined.Send,
-                                "${if (mobile) "로컬 Agent" else "컴퓨터 Codex"}(으)로 보내기",
+                                "${if (mobile) "휴대폰 어시스턴트" else "컴퓨터 Codex"}(으)로 보내기",
                             )
                         }
                 }

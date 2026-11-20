@@ -43,7 +43,7 @@ internal fun OnboardingScreen(
             "OpenRayneo에 오신 것을 환영합니다. 몇 단계로 설정을 마치거나 나중에 계속할 수 있습니다.",
             "휴대폰으로 RayNeo iO에 직접 연결하면 내비게이션과 답변이 눈앞에 표시됩니다.",
             "경로는 Amap이 계획하고, OpenRayneo가 알림을 읽어 방향, 거리, 도로명을 안경에 보여 줍니다.",
-            "휴대폰은 로컬 Agent로 작업을 처리하고 독립적으로 기록·요약합니다. 컴퓨터가 온라인이면 작업을 다음에도 맡길 수 있습니다: Codex.",
+            "질문은 휴대폰에서 바로 처리하고, 기록과 요약도 휴대폰이 혼자 합니다. 컴퓨터의 Codex를 연결하면 긴 작업을 컴퓨터에 맡길 수도 있습니다.",
             "아래는 현재 준비 상태입니다. 완료하지 않은 항목은 언제든 설정에서 계속할 수 있습니다.",
         )
     Column(Modifier.fillMaxSize()) {
@@ -77,7 +77,7 @@ internal fun OnboardingScreen(
                         MaterialTheme.colorScheme.primary,
                     )
                     SetupRow(Icons.Outlined.NearMe, "눈을 들어 내비게이션 보기", "휴대폰 Amap의 실제 내비게이션 알림을 따라감")
-                    SetupRow(Icons.Outlined.AutoAwesome, "언제든 어시스턴트에게 질문", "휴대폰 로컬 Agent와 컴퓨터 연결: Codex")
+                    SetupRow(Icons.Outlined.AutoAwesome, "언제든 어시스턴트에게 질문", "휴대폰에서 바로 답하고, 필요하면 컴퓨터의 Codex에 맡김")
                     SetupRow(Icons.Outlined.Tune, "직접 제어", "표시와 음성 수신은 언제든 일시정지 가능")
                 }
                 1 -> {
@@ -135,8 +135,8 @@ internal fun OnboardingScreen(
                 }
                 3 -> {
                     SetupOption(
-                        "로컬 Agent",
-                        "로컬 엔드포인트를 켜고 DSH Go 플러그인에서 안경을 연결하세요.",
+                        "휴대폰 어시스턴트",
+                        "휴대폰에서 어시스턴트를 켜고, DSH Go 플러그인에서 안경과 연결하세요.",
                         model.state.agentServer.enabled,
                         Icons.Outlined.Smartphone,
                     ) {
@@ -144,13 +144,13 @@ internal fun OnboardingScreen(
                     }
                     SetupOption(
                         "컴퓨터 Codex",
-                        "컴퓨터가 생성한 설정 파일을 가져오거나 연결 매개변수를 입력하세요. USB 연동 시 컴퓨터에서 포워딩을 켜야 합니다.",
+                        "컴퓨터에서 만든 설정 파일을 가져오거나 연결 정보를 직접 입력하세요. USB로 연결할 때는 컴퓨터에서 포워딩을 켜 두어야 합니다.",
                         model.config.optString("codexToken").isNotBlank(),
                         Icons.Outlined.Computer,
                     ) {
                         configure("computer")
                     }
-                    Note("로컬 Agent의 의미 전략과 모델은 DSH Go에서 설정합니다. 기록 요약 모델은 '음성 및 요약' 설정에서 따로 설정할 수 있습니다. 휴대폰 음성 입력은 휴대폰의 인식 서비스를 사용합니다.")
+                    Note("휴대폰 어시스턴트의 답변 방식과 모델은 DSH Go에서 정합니다. 기록 요약에 쓰는 모델은 '요약·대화 모델' 설정에서 따로 고를 수 있습니다.")
                 }
                 4 -> {
                     ContentCard {
@@ -162,9 +162,9 @@ internal fun OnboardingScreen(
                         )
                         CompletionRow("내비게이션 알림 권한", model.notificationAllowed, "허용됨", "나중에 허용")
                         CompletionRow(
-                            "로컬 Agent",
+                            "휴대폰 어시스턴트",
                             model.state.agentServer.enabled,
-                            "엔드포인트 켜짐",
+                            "켜짐",
                             "선택 사항, 나중에 설정",
                         )
                         CompletionRow(

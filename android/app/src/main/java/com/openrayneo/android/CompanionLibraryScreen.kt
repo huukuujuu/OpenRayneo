@@ -23,9 +23,9 @@ internal fun AgentServerScreen(model: AppModel, requestBluetoothPermission: () -
     val context = LocalContext.current
     val state = model.state.agentServer
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("DSH Go 및 외부 Agent", style = MaterialTheme.typography.headlineSmall)
-        Note("어시스턴트 채팅과 음성 입력은 모두 로컬 Agent가 처리합니다. DSH Go 플러그인이 답변, 짧은 힌트, 작업 전략을 담당하고, 도구 승인과 휴대폰 조작은 DSH Go에서 처리하며, 최종 답변은 OpenRayneo와 안경으로 돌아옵니다.")
-        Note("휴대폰이 안경의 블루투스 연결을 유지하고, 외부 Agent는 이 엔드포인트를 통해 기기 도구를 호출합니다. 기본값은 꺼짐이며, 켜면 토큰을 가진 로컬 프로그램이 기록을 읽고 안경 콘텐츠를 수정할 수 있습니다.")
+        Text("DSH Go 연결", style = MaterialTheme.typography.headlineSmall)
+        Note("어시스턴트 채팅과 음성 질문은 휴대폰 어시스턴트가 받아 DSH Go 플러그인에 넘깁니다. 답변 방식, 도구 승인, 휴대폰 조작은 DSH Go가 맡고, 답변은 이 앱과 안경에 표시됩니다.")
+        Note("안경과의 블루투스 연결은 휴대폰이 유지하고, DSH Go 같은 프로그램이 이 연결을 통해 안경을 다룹니다. 기본은 꺼짐입니다. 켜면 토큰을 가진 휴대폰 안의 프로그램이 기록을 읽고 안경 화면을 바꿀 수 있습니다.")
         Note(state.notice)
         var port by remember(model.config.optString("localAgentPort")) { mutableStateOf(model.config.optString("localAgentPort", "8766")) }
         if (!state.enabled) {
@@ -36,7 +36,7 @@ internal fun AgentServerScreen(model: AppModel, requestBluetoothPermission: () -
         if (!model.bluetoothAllowed) {
             Note("백그라운드 기기 서비스에는 Android 근처 기기 권한이 필요합니다. 이 버튼은 권한만 요청하며 안경을 스캔하거나 연결하지 않습니다.")
             ToolButton(onClick = requestBluetoothPermission) { Text("근처 기기 권한 허용") }
-        } else ToolButton(onClick = { model.attempt { model.service().enableAgentServer(!state.enabled) } }) { Text(if (state.enabled) "Agent 엔드포인트 끄기" else "로컬 Agent 엔드포인트 켜기") }
+        } else ToolButton(onClick = { model.attempt { model.service().enableAgentServer(!state.enabled) } }) { Text(if (state.enabled) "휴대폰 어시스턴트 끄기" else "휴대폰 어시스턴트 켜기") }
         if (state.enabled) {
             Text("http://127.0.0.1:${state.port}")
             ToolOutlinedButton(onClick = { model.attempt {
@@ -47,7 +47,7 @@ internal fun AgentServerScreen(model: AppModel, requestBluetoothPermission: () -
             TextButton(onClick = { model.attempt { model.service().agentServer.rotate() } }) { Text("토큰 재설정 (이전 토큰 무효화)") }
             Note("DSH Go: openrayneo-dsh 플러그인을 설치하고, 여기서 주소와 액세스 토큰을 복사한 뒤 DSH 채팅 화면에서 '안경 연결'을 누르고 클립보드 읽기를 허용해 자격 증명을 저장하세요. 포트를 바꿨다면 플러그인의 Service URL도 먼저 수정하세요. 두 앱 모두 백그라운드 실행 권한을 유지하세요.")
             Note("컴퓨터에서 USB로 접근: adb forward tcp:8766 tcp:${state.port}. 이후 컴퓨터의 127.0.0.1:8766으로 요청하세요. 서비스는 휴대폰 로컬 주소에서만 수신하며 LAN에 직접 노출되지 않습니다.")
-            Note("로컬 Agent는 기록 조회, 안경 도구 호출, 작업 수령 및 답변 회신을 할 수 있습니다. 기록 동기화는 아래의 별도 엔드포인트를 사용합니다.")
+            Note("켜져 있으면 기록 조회, 안경 조작, 작업 받기와 답변 보내기를 할 수 있습니다. 기록 동기화는 아래에서 따로 켭니다.")
         }
         HorizontalDivider()
         SectionLabel("휴대폰-컴퓨터 근거리 동기화")

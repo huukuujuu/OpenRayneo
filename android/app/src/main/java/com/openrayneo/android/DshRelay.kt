@@ -56,7 +56,7 @@ internal class DshRelay(private val main: Handler, private val repository: Conve
                     request.state = "failed"; persist(); true
                 } else false
             }
-            if (expired) request.complete(Result.failure(IllegalStateException("외부 Agent 처리 시간 초과. DSH에서 이번 작업을 확인하세요")))
+            if (expired) request.complete(Result.failure(IllegalStateException("DSH Go 응답 시간 초과. DSH Go에서 이번 작업을 확인하세요")))
         }, remaining)
     }
     fun next(authorized: () -> Boolean): JSONObject {
@@ -67,10 +67,10 @@ internal class DshRelay(private val main: Handler, private val repository: Conve
                 if (remaining <= 0) return JSONObject().put("request", JSONObject.NULL)
                 lock.wait(minOf(remaining, 1_000))
             }
-            check(authorized()) { "Agent 엔드포인트가 닫혔거나 토큰이 변경됨" }
+            check(authorized()) { "휴대폰 어시스턴트가 꺼졌거나 토큰이 바뀜" }
             val request = requests.values.first { it.state == "queued" }
             request.state = "running"; request.claimedAt = System.currentTimeMillis(); persist(); scheduleTimeout(request)
-            main.post { progress("로컬 외부 Agent가 수신함. 휴대폰 작업과 승인은 Agent 앱에서 확인하세요") }
+            main.post { progress("DSH Go가 받음. 휴대폰 조작과 승인은 DSH Go에서 확인하세요") }
             return JSONObject().put("request", request.json().put("createdFor", "openrayneo").put("expiresInSeconds", if (request.kind == "task") 600 else 90))
         }
     }

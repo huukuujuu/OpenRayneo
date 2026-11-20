@@ -17,7 +17,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-internal data class AgentServerState(val enabled: Boolean = false, val port: Int = 0, val notice: String = "로컬 Agent 엔드포인트 꺼짐")
+internal data class AgentServerState(val enabled: Boolean = false, val port: Int = 0, val notice: String = "휴대폰 어시스턴트 꺼짐")
 /** Explicitly enabled, loopback-only API. No model credentials, raw audio or voice vectors are returned. */
 internal class LocalAgentServer(private val main: Handler, private val settings: AppSettings, private val changed: () -> Unit,
     private val status: () -> JSONObject, private val records: () -> JSONArray,
@@ -50,7 +50,7 @@ internal class LocalAgentServer(private val main: Handler, private val settings:
             try { while (!server.isClosed) { val client = server.accept(); if (!slots.tryAcquire()) client.close() else {
                 clients.add(client); network.execute { try { handle(client) } finally { clients.remove(client); client.close(); slots.release() } }
             } } }
-            catch (error: java.io.IOException) { if (!server.isClosed) main.post { state = state.copy(notice = "Agent 엔드포인트 중단: ${error.message}"); stop() } }
+            catch (error: java.io.IOException) { if (!server.isClosed) main.post { state = state.copy(notice = "휴대폰 어시스턴트 중단: ${error.message}"); stop() } }
         }
     }
     fun stop(persistSetting: Boolean = true) {
@@ -86,7 +86,7 @@ internal class LocalAgentServer(private val main: Handler, private val settings:
                 if (request[0] == "GET" && request[1] == "/v1/harness/next") {
                     harness().next { socket != null && authorized == "Bearer $token" }
                 } else mainResult {
-                    check(socket != null && authorized == "Bearer $token") { "Agent 엔드포인트가 닫혔거나 토큰이 변경됨" }
+                    check(socket != null && authorized == "Bearer $token") { "휴대폰 어시스턴트가 꺼졌거나 토큰이 바뀜" }
                     tasks.entries.removeAll { System.currentTimeMillis() - it.value.createdAt > 120_000 }
                     val path = request[1]
                     when {

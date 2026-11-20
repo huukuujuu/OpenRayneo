@@ -15,7 +15,7 @@ internal class MobileAgent(private val settings: AppSettings, private val reposi
     private var generation = 0
     private var requestId: String? = null
     var running = false; private set
-    var status = "로컬 Agent 엔드포인트를 켜고 DSH Go를 연결하면 사용할 수 있습니다"; private set
+    var status = "휴대폰 어시스턴트를 켜고 DSH Go를 연결하면 쓸 수 있습니다"; private set
     var answer = ""; private set
     var question = ""; private set
     var ephemeral = false; private set
@@ -28,8 +28,8 @@ internal class MobileAgent(private val settings: AppSettings, private val reposi
         requestId = harness.submit(text, context) { result ->
             if (session == generation) {
                 requestId = null; running = false
-                result.fold({ reply -> answer = reply; status = "로컬 Agent의 이번 라운드가 끝남"; changed(); finalAnswer(text, reply) },
-                    { error -> status = error.message ?: "로컬 Agent 작업이 완료되지 않음"; changed() })
+                result.fold({ reply -> answer = reply; status = "답변 완료"; changed(); finalAnswer(text, reply) },
+                    { error -> status = error.message ?: "작업을 끝내지 못했습니다"; changed() })
             }
         }
     }

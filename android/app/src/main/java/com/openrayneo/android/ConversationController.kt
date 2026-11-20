@@ -370,7 +370,7 @@ internal class ConversationController(private val context: Context, private val 
             worker.post {
                 if (token != generation || contextGeneration != agentContextGeneration) return@post
                 dispatching = false
-                if (accepted == true) { previous = input.map { it.text }; publish(state.copy(status = "소스 채널별로 로컬 Agent에 전달함")); drainAgent() }
+                if (accepted == true) { previous = input.map { it.text }; publish(state.copy(status = "어시스턴트에 전달함")); drainAgent() }
                 else if (accepted == false) { pendingAgent.addAll(0, input); worker.postDelayed({ drainAgent() }, 1_000) }
             }
         }

@@ -373,7 +373,7 @@ internal class BridgeService : Service() {
     fun enableAgentServer(enabled: Boolean) {
         if (enabled) {
             check(checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                "먼저 근처 기기 권한을 허용한 뒤 로컬 Agent 엔드포인트를 활성화하세요"
+                "먼저 근처 기기 권한을 허용한 뒤 휴대폰 어시스턴트를 켜 주세요"
             }
             agentServer.start()
             startForegroundService(Intent(this, BridgeService::class.java))
@@ -480,7 +480,7 @@ internal class BridgeService : Service() {
         input.put("answerMaxChars", settings.read().optString("answerMaxChars").toIntOrNull() ?: DEFAULT_ANSWER_MAX_CHARS)
         // The relay's encrypted outbox accepts work even while DSH or the network is unavailable.
         agent.harness.submit(request.text, context, input = input) { result ->
-            result.fold({ answer -> deliverExternalVoice(request.text, answer, input) }, { conversations.report(it.message ?: "외부 Agent 작업이 완료되지 않음") })
+            result.fold({ answer -> deliverExternalVoice(request.text, answer, input) }, { conversations.report(it.message ?: "DSH Go가 작업을 끝내지 못했습니다") })
         }
         return true
     }
@@ -646,7 +646,7 @@ internal class BridgeService : Service() {
 
     fun submitAnswer(source: AnswerSource, text: String, context: String = "", allowTools: Boolean = true, retainHistory: Boolean = true, forceDsh: Boolean = false) {
         if (source == AnswerSource.MOBILE_AGENT) {
-            check(agentServer.state.enabled) { "먼저 설정의 'DSH Go 및 외부 Agent'에서 로컬 엔드포인트를 활성화하고 DSH Go 플러그인을 시작하세요" }
+            check(agentServer.state.enabled) { "먼저 설정의 'DSH Go 연결'에서 휴대폰 어시스턴트를 켜고 DSH Go 플러그인을 시작하세요" }
         }
         when (source) {
             AnswerSource.MOBILE_AGENT -> check(!agent.running) { "답변을 기다리거나 먼저 중지하세요" }

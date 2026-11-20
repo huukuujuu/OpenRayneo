@@ -296,7 +296,7 @@ private fun GlassesScreen(
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { configure("teleprompter") }) { Text("프롬프터 원고함") }
-                    TextButton(onClick = { configure("agent-api") }) { Text("외부 Agent") }
+                    TextButton(onClick = { configure("agent-api") }) { Text("DSH Go 연결") }
                 }
             }
         }
