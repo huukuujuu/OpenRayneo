@@ -72,6 +72,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                                 "device-settings" -> "안경 설정"
                                 "content" -> "안경 홈 화면과 일정"
                                 "anki" -> "Anki 복습"
+                                "alerts" -> "휴대폰 알림"
                                 "teleprompter" -> "프롬프터 자료"
                                 "agent-api" -> "DSH Go 연결"
                                 else -> listOf("OpenRayneo", "내비게이션", "어시스턴트", "기록")[tab]
@@ -157,6 +158,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                 "device-settings" -> GlassesSettingsScreen(model)
                 "content" -> CompanionContentScreen(model)
                 "anki" -> AnkiScreen(model, actions)
+                "alerts" -> PhoneAlertsScreen(model, actions)
                 "teleprompter" -> pages.SaveableStateProvider("teleprompter") { TeleprompterScreen(model) }
                 "agent-api" -> AgentServerScreen(model, actions.bluetoothPermission)
                 else ->
@@ -303,6 +305,7 @@ private fun GlassesScreen(
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { configure("content") }) { Text("안경 홈 화면") }
+                    TextButton(onClick = { configure("alerts") }) { Text("휴대폰 알림") }
                     TextButton(onClick = { configure("teleprompter") }) { Text("프롬프터 원고함") }
                     TextButton(onClick = { configure("agent-api") }) { Text("DSH Go") }
                 }

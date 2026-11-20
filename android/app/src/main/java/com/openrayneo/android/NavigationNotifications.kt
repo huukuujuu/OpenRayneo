@@ -141,9 +141,12 @@ internal class NavigationNotifications : NotificationListenerService() {
         super.onCreate()
         NavigationFeed.initialize(this)
         initialize(this)
+        PhoneAlerts.load(this)
     }
 
     override fun onListenerConnected() {
+        // Gmail for the mail widget: start from what is showing now.
+        runCatching { activeNotifications?.filter { it.packageName == MailFeed.PACKAGE }?.let(MailFeed::reset) }
         recovery!!.connected(reader)
     }
 
@@ -152,6 +155,11 @@ internal class NavigationNotifications : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(notification: StatusBarNotification) {
+        // Another app's malformed extras must not take down the listener (and navigation with it).
+        try {
+            if (notification.packageName == MailFeed.PACKAGE) MailFeed.posted(notification)
+            PhoneAlerts.posted(this, notification)
+        } catch (failure: Exception) { Log.w("OpenRayneo", "알림 읽기 실패: ${failure.javaClass.simpleName}") }
         if (notification.packageName != NavigationFeed.PACKAGE || recovery?.owns(reader) != true)
             return
         val entry = parseSafely(notification)
@@ -159,6 +167,8 @@ internal class NavigationNotifications : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(notification: StatusBarNotification) {
+        if (notification.packageName == MailFeed.PACKAGE) MailFeed.removed(notification.key)
+        PhoneAlerts.removed(notification.key)
         if (notification.packageName == NavigationFeed.PACKAGE && recovery?.owns(reader) == true)
             NavigationFeed.remove(notification.key)
     }

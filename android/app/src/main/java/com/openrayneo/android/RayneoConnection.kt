@@ -397,13 +397,13 @@ internal class RayneoConnection(private val context: Context, private val listen
         main.postDelayed({ if (ready) sendNotification("Test 3 (KO)", "한국어 테스트: 안녕하세요, RayNeo 안경.") }, 4_000)
     }
 
-    fun sendNotification(title: String, body: String) {
+    fun sendNotification(title: String, body: String, appId: String = "com.openrayneo.bridge", appName: String = "OpenRayneo Android") {
         check(ready) { "먼저 안경을 연결하세요" }
         val timestamp = System.currentTimeMillis().toString()
         val payload = JSONObject().apply {
             put("notificationUID", timestamp)
-            put("appId", "com.openrayneo.bridge")
-            put("appName", "OpenRayneo Android")
+            put("appId", appId)
+            put("appName", appName)
             put("title", title)
             put("subtitle", JSONObject.NULL)
             put("content", body)

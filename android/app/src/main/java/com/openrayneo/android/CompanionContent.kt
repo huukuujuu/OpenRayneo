@@ -26,6 +26,8 @@ internal class CompanionContent(private val context: Context, private val reques
     @Volatile var state = CompanionContentState(); private set
     /** App log (any thread): calendar and to-do sync outcomes with the glasses. */
     @Volatile var log: (String) -> Unit = {}
+    /** Glasses thread: newly added stock, mail and world clock widgets get their data (HomeWidgets). */
+    @Volatile var widgetsAdded: (List<Int>) -> Unit = {}
     private val stateLock = Any()
     /** Both the main and the glasses thread write the state: copy-and-replace under one lock so no update is lost. */
     private fun update(change: (CompanionContentState) -> CompanionContentState) { synchronized(stateLock) { state = change(state) } }
@@ -85,7 +87,7 @@ internal class CompanionContent(private val context: Context, private val reques
         launcher("dashboard_update", JSONObject().put("simple_mode", mode).put("widgets", JSONArray(widgets)).toString())
         val added = widgets.filter { id -> id !in previous.optJSONArray("widgets").ints() }
         if (1 in added && state.weather != null) pushWeather()
-        if (6 in added) pushClock()
+        runCatching { widgetsAdded(added) }.onFailure { log("새 위젯 데이터 보내기 실패: ${it.message}") }
         // Adding the schedule widget: the official app sends the permission state, then the schedule batch.
         // A failure here must not turn the applied layout into an error; the tick sends the calendar again.
         if (3 in added) runCatching { if (state.calendarAllowed && state.calendarToGlasses) syncCalendar() else pushCalendarAuth() }
@@ -462,8 +464,6 @@ internal class CompanionContent(private val context: Context, private val reques
         launcher("weather_update", JSONArray().put(card).toString())
         return JSONObject().put("sent", "weather").put("readBack", false).put("message", "홈 온도와 날씨 카드 모두 응답을 받았습니다. 안경 표시는 확인이 필요합니다")
     }
-    fun pushClock(): JSONObject = launcher("clock_update", JSONArray().put(JSONObject().put("location", "현지 시간")
-        .put("location_id", ZoneId.systemDefault().id).put("timezone", ZoneId.systemDefault().id).put("offset", ZonedDateTime.now().offset.totalSeconds)).toString())
     fun launcher(command: String, data: String, timestamp: String = (System.currentTimeMillis() / 1000).toString()): JSONObject {
         return checkNotNull(requests.request(15, 18, JSONObject().put("cmd", command).put("payload", JSONObject()
             .put("value", 0).put("mode", 0).put("data", data).put("ts", timestamp))) { type, body -> type == 19 && body.optString("cmd") == command })

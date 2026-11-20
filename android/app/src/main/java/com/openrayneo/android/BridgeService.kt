@@ -32,6 +32,7 @@ internal class BridgeService : Service() {
     lateinit var recordSync: RecordSyncServer; private set
     lateinit var content: CompanionContent; private set
     lateinit var anki: AnkiReview; private set
+    lateinit var widgets: HomeWidgets; private set
     private lateinit var supervisor: ConnectionSupervisor
     val connection get() = supervisor.transport
     private lateinit var display: GlassesDisplay
@@ -119,11 +120,20 @@ internal class BridgeService : Service() {
         }
         dispatch(GlassesEvent.NavigationChanged(navigationSnapshot()))
     }
+    /** Phone notification display settings (0x15 type 17), sent on connect and on change like the official app. */
+    fun setPhoneAlerts(next: PhoneAlertSettings) { PhoneAlerts.save(this, next); notifyUI(); pushAlertSettings() }
+    private fun pushAlertSettings() {
+        if (state.link.phase != LinkPhase.FULL) return
+        content.execute({ requests.request(21, 17, PhoneAlerts.settings.glassesConfig(), wait = false); JSONObject() }) { result ->
+            result.exceptionOrNull()?.let { onLog("알림 표시 설정 보내기 실패: ${it.message}") }
+        }
+    }
     private val notificationRefresh = object : Runnable {
         override fun run() {
             if (navigation.enabled) NavigationNotifications.refresh(this@BridgeService)
             content.automaticWeather()
             content.calendarTick()
+            widgets.tick()
             main.postDelayed(this, 30_000)
         }
     }
@@ -157,6 +167,15 @@ internal class BridgeService : Service() {
         content = CompanionContent(this, requests, { connection.resolvedClassicAddress?.takeIf { state.link.phase == LinkPhase.FULL } }, ::notifyUI)
         // Cards use the answer page; without the glasses the review runs on the phone screen only.
         content.log = { text -> main.post { onLog(text) } }
+        widgets = HomeWidgets(this, content, requests, { connection.resolvedClassicAddress?.takeIf { state.link.phase == LinkPhase.FULL } }, ::notifyUI)
+        widgets.log = { text -> main.post { onLog(text) } }
+        content.widgetsAdded = widgets::added
+        PhoneAlerts.load(this)
+        PhoneAlerts.sink = { alert -> main.post {
+            if (!destroyed && state.link.phase == LinkPhase.FULL && !state.disconnecting)
+                runCatching { connection.sendNotification(alert.title.ifBlank { alert.appName }, alert.text, alert.packageName, alert.appName) }
+                    .onFailure { onLog("휴대폰 알림 전달 실패: ${it.message}") }
+        } }
         anki = AnkiReview(this, main, ::notifyUI, { title, body, refresh ->
             // A refresh only rewrites a card still on the glasses; one the wearer closed stays closed.
             val showing = (state.intent as? DisplayIntent.Answer)?.ref?.source == AnswerSource.FLASHCARD
@@ -176,7 +195,7 @@ internal class BridgeService : Service() {
             org.json.JSONArray(conversations.repository.records.map { it.json().apply { remove("speakerSamples") } })
         }, { name, args, allowed, completion -> requests.withPermission(allowed) { executeTool(name, args, completion) } }, { agent.harness }, ::recordAPI)
         requests.observe = { protocol, type, body ->
-            when (protocol) { 15 -> deviceSettings.observe(type, body); 22 -> content.observe(type, body) }
+            when (protocol) { 15 -> { deviceSettings.observe(type, body); widgets.observe(type, body) }; 22 -> content.observe(type, body) }
             // The glasses' teleprompter requests are not mapped from a real device yet: log the first of each kind.
             // Schedule/to-do frames from the glasses other than query replies: the calendar widget's state is not mapped yet.
             if (protocol == 0x16 && type != 16) {
@@ -296,7 +315,7 @@ internal class BridgeService : Service() {
                     requests.disconnected(); deviceSettings.disconnected(); content.disconnected(); teleprompter.disconnected(); voiceMemo.disconnected()
                     if (state.offer != null) events.add(GlassesEvent.ClearOffer(null, decline = false))
                 }
-                if (previous.link.phase != LinkPhase.FULL && state.link.phase == LinkPhase.FULL) { content.connected(); teleprompter.connected(); runCatching { deviceSettings.refresh() } }
+                if (previous.link.phase != LinkPhase.FULL && state.link.phase == LinkPhase.FULL) { content.connected(); widgets.connected(); pushAlertSettings(); teleprompter.connected(); runCatching { deviceSettings.refresh() } }
                 if (previous.session != null && state.session == null && previous.session.mode == PageMode.PROMPT && conversations.state.running && conversations.state.source == ConversationSource.REALTIME && conversationOwnsDisplay &&
                     (state.ownership != DisplayOwnership.APP || state.intent == DisplayIntent.Idle || state.intent == DisplayIntent.Navigation || state.error != null)) {
                     conversationOwnsDisplay = false; conversations.stop()
@@ -964,6 +983,7 @@ internal class BridgeService : Service() {
     }
     override fun onDestroy() {
         destroyed = true; observers.clear(); main.removeCallbacksAndMessages(null)
+        PhoneAlerts.sink = null; widgets.close()
         navigation.observers.remove(navigationObserver)
         translator.close(); virtualVoice.close(); voiceMemo.close(); agent.close(); codex.close(); conversations.close(); agentServer.close(); recordSync.close(); requests.close(); content.close(); anki.close(); display.reset(); audio.close(); voiceAudio.close(); supervisor.close()
         logFile.close()

@@ -25,7 +25,7 @@ internal fun CompanionContentScreen(model: AppModel) {
     var cityQuery by rememberSaveable { mutableStateOf("") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("레이아웃", "일정", "날씨").forEachIndexed { i, name -> FilterChip(page == i, { page = i }, label = { Text(name) }) }
+            listOf("위젯", "일정", "날씨", "주식", "세계 시계").forEachIndexed { i, name -> FilterChip(page == i, { page = i }, label = { Text(name) }) }
         }
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         Note("할 일은 앱 홈에서 관리합니다. 안경이 연결되면 안경 할 일 목록과 자동으로 맞춥니다.")
@@ -33,8 +33,10 @@ internal fun CompanionContentScreen(model: AppModel) {
             0 -> {
                 ToolOutlinedButton(onClick = { model.attempt { model.service().content.refresh() } }, enabled = editable) { Text("안경 홈 화면 읽기") }
                 Note(if (connected) state.notice else "먼저 안경을 연결하세요")
-                DashboardLayoutEditor(model)
+                DashboardLayoutEditor(model) { page = it }
             }
+            3 -> StockSettings(model)
+            4 -> ClockSettings(model)
             1 -> CalendarSettings(model, editable)
             2 -> {
                 ToolButton(onClick = { model.attempt { val content = model.service().content
@@ -61,33 +63,114 @@ internal fun CompanionContentScreen(model: AppModel) {
     }
 }
 
+/** Like the official dashboard settings: added widgets (n/5) in order, then the ones not added; every change applies at once. */
 @Composable
-private fun DashboardLayoutEditor(model: AppModel) {
+private fun DashboardLayoutEditor(model: AppModel, open: (Int) -> Unit) {
     val state = model.state.content
     val config = state.dashboard
-    if (config == null) { Note("안경 콘텐츠를 읽은 뒤 홈 스타일과 위젯 순서를 설정할 수 있습니다."); return }
-    var mode by remember(config.toString()) { mutableIntStateOf(config.optInt("simple_mode")) }
-    var widgets by remember(config.toString()) { mutableStateOf(config.optJSONArray("widgets").ints()) }
-    val names = mapOf(1 to "날씨", 2 to "할 일", 3 to "일정", 4 to "주식", 5 to "메일", 6 to "세계 시계")
+    if (config == null) { Note("안경을 연결하고 '안경 홈 화면 읽기'를 누르면 위젯을 고칠 수 있습니다."); return }
+    val mode = config.optInt("simple_mode")
+    val widgets = config.optJSONArray("widgets").ints()
     val enabled = !state.busy && model.state.glasses.link.phase == LinkPhase.FULL
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        listOf("표준", "간결", "대각 분할").forEachIndexed { index, title -> FilterChip(mode == index, { mode = index }, label = { Text(title) }) }
+    fun apply(nextMode: Int, next: List<Int>) = model.attempt { model.service().content.run { model.service().content.layout(nextMode, next) } }
+    val w = model.state.widgets
+    fun source(id: Int) = when (id) {
+        1 -> state.weather?.optString("location")?.ifBlank { null } ?: "도시 미선택"
+        2 -> "휴대폰 할 일"
+        3 -> if (state.calendarAllowed) "휴대폰 캘린더" else "캘린더 권한 필요"
+        4 -> "${w.stocks.size}개 종목"
+        5 -> "Gmail 알림"
+        6 -> w.clock?.optString("location") ?: "현지 시간"
+        else -> ""
     }
+    // Where each widget is set up: tab index in this screen, or null when there is nothing to set.
+    val page = mapOf(1 to 2, 3 to 1, 4 to 3, 6 to 4)
+    SectionLabel("홈 스타일")
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("표준", "간결", "대각 분할").forEachIndexed { index, title ->
+            FilterChip(mode == index, { if (mode != index) apply(index, widgets) }, label = { Text(title) }, enabled = enabled)
+        }
+    }
+    SectionLabel("위젯 추가됨 (${widgets.size}/5)")
     widgets.forEachIndexed { index, id ->
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(names[id] ?: "기기 위젯$id", Modifier.weight(1f))
-            TextButton(onClick = { widgets = widgets.toMutableList().apply { add(index - 1, removeAt(index)) } }, enabled = index > 0) { Text("위로") }
-            TextButton(onClick = { widgets = widgets.toMutableList().apply { add(index + 1, removeAt(index)) } }, enabled = index < widgets.lastIndex) { Text("아래로") }
-            TextButton(onClick = { widgets = widgets.filter { it != id } }, enabled = widgets.size > 1) { Text("제거") }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(WIDGET_NAMES[id] ?: "기기 위젯 $id")
+                Note(source(id))
+            }
+            page[id]?.let { target -> TextButton(onClick = { open(target) }) { Text("설정") } }
+            IconlessButton("↑", enabled && index > 0) { apply(mode, widgets.toMutableList().apply { add(index - 1, removeAt(index)) }) }
+            IconlessButton("↓", enabled && index < widgets.lastIndex) { apply(mode, widgets.toMutableList().apply { add(index + 1, removeAt(index)) }) }
+            TextButton(onClick = { apply(mode, widgets.filter { it != id }) }, enabled = enabled && widgets.size > 1) { Text("제거") }
         }
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        listOf(1,2,3,6).filter { it !in widgets }.forEach { id ->
-            TextButton(onClick = { widgets = widgets + id }, enabled = widgets.size < 5 && (id != 1 || state.weather != null)) { Text("추가: ${names[id]}") }
+    val missing = WIDGET_NAMES.keys.filter { it !in widgets }
+    if (missing.isNotEmpty()) {
+        SectionLabel("추가되지 않음")
+        missing.forEach { id ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text(WIDGET_NAMES.getValue(id)); Note(source(id)) }
+                TextButton(onClick = { apply(mode, widgets + id) }, enabled = enabled && widgets.size < 5) { Text("추가") }
+            }
+        }
+        if (widgets.size >= 5) Note("위젯은 5개까지 넣을 수 있습니다. 하나를 제거하면 추가할 수 있습니다.")
+    }
+    Note("메일 위젯은 휴대폰의 Gmail 알림을 보여 줍니다(로그인 불필요, 알림 접근 권한 필요). 안 읽은 수는 휴대폰에 떠 있는 Gmail 알림 수입니다.")
+}
+
+private val WIDGET_NAMES = linkedMapOf(1 to "날씨", 3 to "일정", 4 to "주식", 5 to "메일", 6 to "세계 시계", 2 to "할 일")
+
+@Composable
+private fun IconlessButton(label: String, enabled: Boolean, onClick: () -> Unit) =
+    TextButton(onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(label) }
+
+/** Stocks widget: up to 6 symbols, prices from Yahoo Finance (delayed). */
+@Composable
+private fun StockSettings(model: AppModel) {
+    val w = model.state.widgets
+    var query by rememberSaveable { mutableStateOf("") }
+    SectionLabel("주식 추가됨 (${w.stocks.size}/6)")
+    if (w.stocks.isEmpty()) Note("아직 종목이 없습니다. 아래에서 검색해 추가하세요.")
+    w.stocks.forEach { stock ->
+        Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) { Text(stock.optString("symbol")); Note("${stock.optString("exchange")} · ${stock.optString("name")}") }
+            TextButton(onClick = { model.attempt { model.service().widgets.removeStock(stock.getString("symbol")) } }) { Text("제거") }
         }
     }
-    Note("날씨는 먼저 날씨 탭에서 도시를 설정하세요. 세계 시계는 휴대폰의 현재 시간대를 사용합니다. 기존 주식·메일 위젯은 유지되며 데이터 소스는 원래 설정을 따릅니다.")
-    ToolButton(onClick = { model.attempt { model.service().content.run { model.service().content.layout(mode, widgets) } } }, enabled = enabled) { Text("홈 레이아웃 적용") }
+    OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), label = { Text("주식 검색 (예: AAPL, 삼성전자, 005930)") }, singleLine = true)
+    ToolButton(onClick = { model.attempt { model.service().widgets.background("주식 검색") { model.service().widgets.searchStocks(query) } } },
+        enabled = query.isNotBlank()) { Text("종목 찾기") }
+    w.stockResults.forEach { row ->
+        TextButton(onClick = { model.attempt { model.service().widgets.addStock(row) } }, enabled = w.stocks.size < 6) {
+            Text("${row.optString("symbol")} · ${row.optString("name")} · ${row.optString("exchange")}")
+        }
+    }
+    if (w.notice.isNotBlank()) Note(w.notice)
+    Note("주식 데이터는 Yahoo Finance에서 가져오며 지연될 수 있고 참고용입니다. 연결 중 10분마다, 안경이 요청할 때 새로 보냅니다.")
+}
+
+/** World clock widget: one city, like the official app. */
+@Composable
+private fun ClockSettings(model: AppModel) {
+    val w = model.state.widgets
+    var query by rememberSaveable { mutableStateOf("") }
+    SectionLabel("도시 추가됨 (${if (w.clock == null) 0 else 1}/1)")
+    Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(w.clock?.optString("location") ?: "현지 시간 (휴대폰 시간대)")
+            Note(w.clock?.optString("timezone") ?: ZoneId.systemDefault().id)
+        }
+        if (w.clock != null) TextButton(onClick = { model.attempt { model.service().widgets.setClock(null) } }) { Text("현지 시간으로") }
+    }
+    OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), label = { Text("도시 검색 (예: 뉴욕, London)") }, singleLine = true)
+    ToolButton(onClick = { model.attempt { model.service().widgets.background("도시 검색") { model.service().widgets.searchClock(query) } } },
+        enabled = query.isNotBlank()) { Text("도시 찾기") }
+    w.clockResults.forEach { row ->
+        TextButton(onClick = { model.attempt { model.service().widgets.setClock(row) } }) {
+            val now = LocalDateTime.now(ZoneId.of(row.getString("timezone"))).format(DateTimeFormatter.ofPattern("HH:mm"))
+            Text("${row.optString("location")} · ${row.optString("timezone")} · $now")
+        }
+    }
 }
 
 /** Which phone calendars feed the app and the glasses, plus what the glasses hold now. */

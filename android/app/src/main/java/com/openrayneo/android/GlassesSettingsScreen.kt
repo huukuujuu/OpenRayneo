@@ -26,6 +26,13 @@ internal fun GlassesSettingsScreen(model: AppModel) {
             enabled = connected && !snapshot.busy, modifier = Modifier.fillMaxWidth()) { Text("안경 설정 읽기") }
         if (snapshot.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         Note(if (connected) snapshot.notice else "먼저 안경 탭에서 연결을 완료하세요")
+        val savedName = model.state.widgets.userName
+        var name by remember(savedName) { mutableStateOf(savedName) }
+        SettingsSection("내 이름") {
+            OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("안경에 보일 이름") }, singleLine = true)
+            Note("공식 앱처럼 연결할 때마다 안경에 보냅니다.")
+            ToolButton(onClick = { model.attempt { model.service().widgets.setUserName(name) } }, enabled = name.trim() != savedName) { Text("이름 저장") }
+        }
         if (snapshot.loaded) {
             SettingsSection("기기 정보") {
                 Text(status.optString("deviceName").ifBlank { model.deviceName }, style = MaterialTheme.typography.titleMedium)
@@ -69,10 +76,12 @@ internal fun GlassesSettingsScreen(model: AppModel) {
                 if (current != null && currentAngle != null && currentCrown != null) {
                     var enabled by remember(current) { mutableStateOf(current) }; var angle by remember(currentAngle) { mutableIntStateOf(currentAngle) }
                     var crown by remember(currentCrown) { mutableIntStateOf(currentCrown) }
-                    SettingsSection("깨우기 방식") {
-                        SettingsToggle("고개 들면 화면 켜기", enabled, editable) { enabled = it }
-                        Text("고개 드는 각도 $angle°"); Slider(angle.toFloat(), { angle = it.toInt() }, valueRange = 0f..90f, enabled = editable)
-                        SettingsChoice("다이얼 화면 끄기 애니메이션", crown, listOf(0 to "꺼짐", 1 to "자이로스코프", 2 to "콕 찌르기", 3 to "구슬"), editable) { crown = it }
+                    SettingsSection("절전 설정") {
+                        SettingsToggle("Head-Up 디스플레이 (고개를 들면 화면 켜기)", enabled, editable) { enabled = it }
+                        Text("Head-Up 각도 $angle°"); Slider(angle.coerceIn(0, 70).toFloat(), { angle = it.toInt() }, valueRange = 0f..70f, enabled = editable && enabled)
+                        TextButton(onClick = { angle = 20 }, enabled = editable && angle != 20) { Text("기본 각도(20°) 복원") }
+                        SettingsChoice("화면 꺼짐 상호 작용", crown, listOf(0 to "꺼짐", 1 to "자이로스코프", 2 to "콕 찌르기", 3 to "구슬"), editable) { crown = it }
+                        Note("화면이 꺼진 상태에서 크라운을 돌리면 고른 픽셀 애니메이션이 나옵니다.")
                         ToolButton(onClick = { model.attempt { model.service().deviceSettings.wakeup(enabled, angle, crown) } }, enabled = editable) { Text("깨우기 설정 적용") }
                     }
                 }
@@ -81,9 +90,10 @@ internal fun GlassesSettingsScreen(model: AppModel) {
                 val enabledNow = head.deviceFlag("enabled"); val modeNow = head.deviceInt("mode")
                 if (enabledNow != null && modeNow != null) {
                     var enabled by remember(enabledNow) { mutableStateOf(enabledNow) }; var mode by remember(modeNow) { mutableIntStateOf(modeNow) }
-                    SettingsSection("머리 제스처 제어") {
-                        SettingsToggle("머리 제스처 허용", enabled, editable) { enabled = it }
-                        SettingsChoice("기기 모드", mode, listOf(0 to "모드 0", 1 to "모드 1"), editable) { mode = it }
+                    SettingsSection("헤드 컨트롤") {
+                        SettingsToggle("머리 제스처", enabled, editable) { enabled = it }
+                        Note("고개를 끄덕이거나 저어 안경의 제안을 받거나 닫습니다.")
+                        SettingsChoice("방향", mode, listOf(0 to "자연 (끄덕임 확인, 젓기 취소)", 1 to "사용자 지정 (끄덕임 취소, 젓기 확인)"), editable && enabled) { mode = it }
                         ToolButton(onClick = { model.attempt { model.service().deviceSettings.headGestures(enabled, mode) } }, enabled = editable) { Text("머리 제스처 적용") }
                     }
                 }
@@ -92,11 +102,13 @@ internal fun GlassesSettingsScreen(model: AppModel) {
                 val d = crown.deviceInt("direction"); val c = crown.deviceInt("double"); val l = crown.deviceInt("longPress")
                 if (d != null && c != null && l != null) {
                     var direction by remember(d) { mutableIntStateOf(d) }; var double by remember(c) { mutableIntStateOf(c) }; var long by remember(l) { mutableIntStateOf(l) }
-                    val choices = listOf(0 to "어시스턴트", 1 to "홈", 2 to "방해 금지", 3 to "녹음", 4 to "자막", 5 to "프롬프터", 6 to "종일 기록", 7 to "없음", 8 to "할 일", 9 to "실시간 힌트")
-                    SettingsSection("다이얼 조작") {
-                        SettingsChoice("방향", direction, listOf(0 to "방향 0", 1 to "방향 1"), editable) { direction = it }
+                    val choices = listOf(0 to "RayNeo AI", 1 to "대시보드로 돌아가기", 2 to "집중 모드", 3 to "음성 메모", 4 to "실시간 자막",
+                        5 to "텔레프롬프터", 6 to "Life Log 켜기/끄기", 9 to "Live Answers", 8 to "할 일", 7 to "없음")
+                    SettingsSection("크라운 컨트롤") {
+                        SettingsChoice("회전 방향", direction, listOf(1 to "자연 (시계 방향으로 오른쪽·아래)", 0 to "기본 (반시계 방향으로 오른쪽·아래)"), editable) { direction = it }
                         SettingsChoice("두 번 누르기", double, choices, editable) { double = it }
-                        SettingsChoice("길게 누르기", long, choices.filter { it.first != 6 }, editable) { long = it }
+                        SettingsChoice("화면이 꺼진 상태에서 길게 누르기", long, choices.filter { it.first != 1 && it.first != 6 }, editable) { long = it }
+                        Note("길게 누르기 단축키는 화면이 꺼져 있을 때만 동작합니다. 화면이 켜져 있으면 대시보드로 돌아갑니다.")
                         ToolButton(onClick = { model.attempt { model.service().deviceSettings.crown(direction, double, long) } }, enabled = editable) { Text("다이얼 조작 적용") }
                     }
                 }
