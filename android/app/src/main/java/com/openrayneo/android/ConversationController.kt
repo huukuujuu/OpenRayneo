@@ -3,6 +3,9 @@
 package com.openrayneo.android
 
 import android.content.Context
+import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.Vad
+import com.k2fsa.sherpa.onnx.VadModelConfig
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -27,6 +30,16 @@ internal class ConversationController(private val context: Context, private val 
     var livePartial: ((Int, String) -> Unit)? = null
     private val gate = VoiceGate()
     @Volatile private var gating = false
+    /** Writer thread: the phone's own speech detector for always-on gating (others' voices the glasses may not flag). */
+    private var phoneVoice: PhoneVoiceDetector? = null
+    // Worker thread: always-on gating sends only speech spans to the recognizer (silence is not billed).
+    private var lastSpeechEnd = Long.MIN_VALUE / 2
+    /** A glasses round with gated spans is open: the assistant waits for its end, as when one recognizer session spanned it. */
+    private var gatedRound = false
+    private val preroll = mutableMapOf<Int, ArrayDeque<Pair<Long, FloatArray>>>()
+    @Volatile private var gatedTotal = 0L
+    @Volatile private var gatedSent = 0L
+    private fun gateSummary() = if (gatedTotal == 0L) "" else "말소리만 인식 서버로 보냄: 전체의 ${gatedSent * 100 / gatedTotal}%"
     /** Glasses speech flags (one per 20 ms frame) for always-on audio; ignored unless gating is on. */
     fun voiceActivity(frames: List<Boolean>) { if (gating && state.running && !closing && !replaying) gate.offer(frames) }
     /** Main thread, when an always-on round starts or ends: queued audio is discarded there, so drop its flags too. */
@@ -138,7 +151,7 @@ internal class ConversationController(private val context: Context, private val 
         check(!state.running && !closing) { "먼저 현재 기록을 중지하세요" }; check(state.modelReady) { state.error ?: "음성 모델이 아직 준비되지 않음" }
         val cfg = settings.read(); val token = ++generation
         gating = source == ConversationSource.ALWAYS_ON && cfg.optString("glassesVoiceGate", "true") != "false"
-        writer.post { gate.reset() }
+        writer.post { gate.reset(); phoneVoice?.release(); phoneVoice = if (gating) PhoneVoiceDetector(context) else null }
         publish(state.copy(activeRecord = null, running = true, stopping = false, mode = mode, source = source, segments = emptyList(), error = null,
             status = if (mode == ConversationMode.ENROLL) "등록은 지정 채널의 본인 목소리만 수집합니다" else if (source == ConversationSource.REALTIME) "2채널 유지: 채널 1은 기본 본인, 채널 2는 별도 식별" else "혼합/단일 채널 오디오는 전체 화자 식별",
             enrollmentSeconds = 0f, enrollmentReady = false, enrollmentCanConfirm = false, enrollmentTotalSeconds = 0f, decodedSeconds = 0.0))
@@ -149,6 +162,7 @@ internal class ConversationController(private val context: Context, private val 
             resourcePauseReason = if (mode == ConversationMode.ENROLL) null else resourceConstraint()
             deferredProcessing = mode != ConversationMode.ENROLL && (!SpeechRounds.ready(context, cfg) || resourcePauseReason != null)
             pendingSentences.clear(); pendingAgent.clear(); dispatching = false; manualSpeakers.clear(); laneStarts.clear(); inputThrough.clear()
+            lastSpeechEnd = Long.MIN_VALUE / 2; preroll.clear(); gatedTotal = 0; gatedSent = 0; gatedRound = false
             resamplers = List(2) { ConversationAudio() }; enrollmentTarget = target
             record = ConversationRecord(mode = mode, source = source, audioAnchors = listOf(AudioAnchor(0, System.currentTimeMillis())),
                 channelPolicy = "pending_actual_channels", audioPending = mode != ConversationMode.ENROLL, processingPending = deferredProcessing)
@@ -188,7 +202,9 @@ internal class ConversationController(private val context: Context, private val 
                 val start = samples
                 if (savingAudio) recordings.appendChannels(pcm)
                 // Only the live ASR/speaker path is gated; the saved recording stays raw for later backfill.
-                val live = if (gating) gate.apply(pcm) else pcm
+                // Speech = the glasses flag it or the phone's detector hears it; silent chunks reach the speaker engine as zeros.
+                val speech = if (gating) gate.speech(pcm.frames) or (phoneVoice?.speech(pcm) == true) else null
+                val live = pcm
                 samples += pcm.frames
                 val queued = queuedSamples.addAndGet(pcm.frames)
                 if (queued > 240_000 && savingAudio) deferredProcessing = true
@@ -196,16 +212,17 @@ internal class ConversationController(private val context: Context, private val 
                     queuedSamples.addAndGet(-pcm.frames)
                     if (!liveBackfill && System.currentTimeMillis() - lastPublished > 1_000) worker.post { markPending("모든 채널의 원본 오디오를 저장했습니다. 나중에 채널별로 보충합니다") }
                 } else worker.post {
-                    try { if (token == generation && !deferredProcessing) process(live, start) }
+                    try { if (token == generation && !deferredProcessing) process(live, start, speech) }
                     catch (error: Exception) { if (savingAudio) pauseLive(error.message ?: "음성 처리 보충 대기") else fail(error.message ?: "등록 실패", token) }
                     finally { queuedSamples.addAndGet(-pcm.frames) }
                 }
                 if (System.currentTimeMillis() - lastPublished > 1_000) { lastPublished = System.currentTimeMillis()
-                    publish(state.copy(decodedSeconds = samples / 16000.0, voiceGate = gate.summary().ifEmpty { selfGate?.summary().orEmpty() })) }
+                    publish(state.copy(decodedSeconds = samples / 16000.0, voiceGate = gateSummary().ifEmpty { selfGate?.summary().orEmpty() })) }
             } catch (error: Exception) { fail(error.message ?: "원본 오디오 저장 실패", token) }
         }
     }
-    private fun process(input: ConversationPCM, startFrame: Long) {
+    /** [speech] is set only for gated always-on audio: the recognizer then gets speech spans, not the silence between them. */
+    private fun process(input: ConversationPCM, startFrame: Long, speech: Boolean? = null) {
         val pcm = selfGate?.takeIf { input.channels.size == 2 }?.apply(input) ?: input
         if (state.mode == ConversationMode.ENROLL) {
             engine(enrollmentChannel).accept(pcm.channels[enrollmentChannel - 1])
@@ -213,15 +230,36 @@ internal class ConversationController(private val context: Context, private val 
             publish(state.copy(enrollmentSeconds = result.seconds, enrollmentReady = result.ready, enrollmentCanConfirm = result.confirmationVectors.isNotEmpty(),
                 enrollmentTotalSeconds = result.totalSeconds, status = result.message)); return
         }
+        // Gated: a span opens on speech (with the audio just before it) and closes after SPAN_CLOSE of no speech.
+        // Each span is its own recognizer session, so its timestamps start at the span; the silence is never sent.
+        val gated = speech != null && !replaying
+        val sending = !gated || speech == true || activeASR.isNotEmpty() && startFrame - lastSpeechEnd < SPAN_CLOSE
+        if (gated) {
+            gatedRound = true
+            if (speech == true) lastSpeechEnd = startFrame + pcm.frames
+            gatedTotal += pcm.frames; if (sending) gatedSent += pcm.frames
+            if (!sending && activeASR.isNotEmpty()) finishRounds()
+        }
         pcm.channels.forEachIndexed { index, data ->
             val channel = index + 1
             val first = ((laneStarts[channel] ?: (roundBaseMS * 16)) - startFrame).coerceIn(0, data.size.toLong()).toInt()
             if (first == data.size) return@forEachIndexed
             val begin = startFrame + first; val selected = if (first == 0) data else data.copyOfRange(first, data.size)
-            if (activeASR[channel] == null) startASR(channel, begin)
-            activeASR[channel]?.append(selected)
+            if (gated && !sending) {
+                val recent = preroll.getOrPut(channel) { ArrayDeque() }
+                recent.addLast(begin to selected)
+                while (recent.sumOf { it.second.size } - recent.first().second.size >= PREROLL) recent.removeFirst()
+            } else if (gated && activeASR[channel] == null) {
+                val recent = preroll.remove(channel).orEmpty()
+                startASR(channel, recent.firstOrNull()?.first ?: begin)
+                recent.forEach { activeASR[channel]?.append(it.second) }
+                activeASR[channel]?.append(selected)
+            } else {
+                if (activeASR[channel] == null) startASR(channel, begin)
+                activeASR[channel]?.append(selected)
+            }
             inputThrough[channel] = startFrame + data.size
-            if (!fixedSelf(channel)) engine(channel).accept(selected)
+            if (!fixedSelf(channel)) engine(channel).accept(if (gated && speech == false) FloatArray(selected.size) else selected)
         }
         drainSentences()
     }
@@ -274,6 +312,12 @@ internal class ConversationController(private val context: Context, private val 
         })
         rounds[round] = info; activeASR[channel] = round; round.start()
     }
+    private companion object {
+        /** Gated always-on: no speech for this long (frames) ends the span; longer than the recognizer's 1.2 s sentence end. */
+        const val SPAN_CLOSE = 16_000L * 5 / 2
+        /** Audio kept before speech is detected, so the first word is not cut (the detectors need a moment). */
+        const val PREROLL = 16_000 * 6 / 10
+    }
     private fun commitCursor(channel: Int, frames: Long) {
         val old = record ?: return
         record = old.copy(processingCursors = old.processingCursors + (channel.toString() to maxOf(old.completedFrames(channel), frames)))
@@ -289,12 +333,12 @@ internal class ConversationController(private val context: Context, private val 
             if (token != generation || !state.running || closing) return@post
             record = record?.let { it.copy(audioAnchors = it.audioAnchors.filter { a -> a.offsetMS != base / 16 } + AudioAnchor(base / 16, receivedAt)) }; saveRecord()
             if (liveBackfill) return@post
-            engines.values.forEach { it.beginRound(base / 16) }; drainSentences(); finishRounds(); roundId = wakeId; roundBaseMS = base / 16
-            lanes().forEach { laneStarts[it] = base }
+            engines.values.forEach { it.beginRound(base / 16) }; drainSentences(); finishRounds(); gatedRound = false; roundId = wakeId; roundBaseMS = base / 16
+            lanes().forEach { laneStarts[it] = base }; preroll.clear()
         } }
     }
     fun endRound() { writer.post { worker.post {
-        if (state.running && !closing && !liveBackfill) { engines.values.forEach { it.flush() }; drainSentences(); finishRounds(); drainAgent() }
+        if (state.running && !closing && !liveBackfill) { engines.values.forEach { it.flush() }; drainSentences(); finishRounds(); gatedRound = false; drainAgent() }
     } } }
     fun transportError(message: String) = fail(message, generation)
     fun report(message: String) { publish(state.copy(error = message)) }
@@ -359,7 +403,7 @@ internal class ConversationController(private val context: Context, private val 
     }
     private fun drainAgent() {
         if (dispatching || pendingAgent.isEmpty() || !state.running) return
-        if (state.source == ConversationSource.ALWAYS_ON && !liveBackfill && !replaying && rounds.isNotEmpty()) return
+        if (state.source == ConversationSource.ALWAYS_ON && !liveBackfill && !replaying && (rounds.isNotEmpty() || gatedRound)) return
         val input = pendingAgent.toList(); val token = generation; val source = state.source; val contextGeneration = agentContextGeneration
         val payload = modePolicy.input(source, input, repository.people, previous, previousReply).put("recordId", record?.id).put("recordRevision", record?.revision)
         val voice = VoiceRequest(input.joinToString(" ") { it.text }, payload.toString(), source, input.lastOrNull()?.roundId,
@@ -398,7 +442,7 @@ internal class ConversationController(private val context: Context, private val 
                 try {
                     if (activeASR.values.any { !it.canAcceptAudio() }) { worker.postDelayed(this, 100); return }
                     val pcm = tail?.nextBlock()
-                    if (pcm != null) { val begin = tailSamples; tailSamples += pcm.frames; if (!live) samples = tailSamples; process(pcm, begin) }
+                    if (pcm != null) { val begin = tailSamples; tailSamples += pcm.frames; if (!live) samples = tailSamples; process(pcm, begin, catchUpSpeech(live, pcm)) }
                     else if (!live && tail?.finished == true) { replayReadComplete = true; stop(); return }
                     if (live) {
                         val pending = samples - tailSamples > 16000
@@ -410,6 +454,12 @@ internal class ConversationController(private val context: Context, private val 
                 }
             }
         }; worker.post(pump)
+    }
+    /** Worker thread. Live catch-up after a pause keeps the always-on gate (else the rest of the day's silence is billed). */
+    private var catchUpVoice: PhoneVoiceDetector? = null
+    private fun catchUpSpeech(live: Boolean, pcm: ConversationPCM): Boolean? {
+        if (!live || !gating) return null
+        return (catchUpVoice ?: PhoneVoiceDetector(context).also { catchUpVoice = it }).speech(pcm)
     }
     private fun resumeLive() { try { beginBackfill(true) } catch (error: Exception) { pauseLive(error.message ?: "복구 초기화 실패") } }
     fun resetAgentConversation() {
@@ -436,7 +486,7 @@ internal class ConversationController(private val context: Context, private val 
             worker.post {
                 if (quickStop) deferredProcessing = true
                 if (liveBackfill && !deferredProcessing) runCatching {
-                    while (activeASR.values.all { it.canAcceptAudio() }) { val pcm = tail?.nextBlock() ?: break; val begin = tailSamples; tailSamples += pcm.frames; process(pcm, begin) }
+                    while (activeASR.values.all { it.canAcceptAudio() }) { val pcm = tail?.nextBlock() ?: break; val begin = tailSamples; tailSamples += pcm.frames; process(pcm, begin, catchUpSpeech(true, pcm)) }
                 }.onFailure { pauseLive(it.message ?: "마무리 후 보충 대기") }
                 val pending = if (liveBackfill) deferredProcessing || tailSamples < count else deferredProcessing || record?.processingPending == true
                 record = record?.copy(audioSamples = count, audioPending = false, endedAt = record?.endedAt ?: System.currentTimeMillis(), processingPending = pending)
@@ -466,6 +516,7 @@ internal class ConversationController(private val context: Context, private val 
             main.post { if (contextGeneration == agentContextGeneration) request(voice) }
         }
         replaying = false; pendingSentences.clear(); pendingAgent.clear(); dispatching = false; engines.values.forEach { it.reset() }; manualSpeakers.clear(); closing = false
+        preroll.clear(); gatedRound = false; catchUpVoice?.release(); catchUpVoice = null; writer.post { phoneVoice?.release(); phoneVoice = null }
         publish(state.copy(running = false, stopping = false, segments = finished?.segments.orEmpty(), activeRecord = null, records = repository.records, status = message))
         if (finished != null && finished.mode != ConversationMode.ENROLL && !finished.processingPending && finished.segments.isNotEmpty()) { enqueueSummary(finished.id, "record_end"); scheduleDaySummaries(finished.source == ConversationSource.ALWAYS_ON) }
         val continuation = stopAfter; stopAfter = null; main.post { if (continuation != null) continuation() else stopped() }
@@ -613,8 +664,8 @@ internal class ConversationController(private val context: Context, private val 
     fun close() {
         worker.removeCallbacks(maintenance)
         if (state.running && !closing) stop()
-        writer.post { worker.post {
-            generation++; cancelASR(); tail?.close(); engines.values.forEach { it.close() }; engines.clear(); summarizer.close(); inference.shutdownNow()
+        writer.post { phoneVoice?.release(); phoneVoice = null; worker.post {
+            generation++; cancelASR(); tail?.close(); catchUpVoice?.release(); catchUpVoice = null; engines.values.forEach { it.close() }; engines.clear(); summarizer.close(); inference.shutdownNow()
             writerThread.quitSafely(); thread.quitSafely()
         } }
     }
@@ -660,9 +711,9 @@ internal class SelfVoiceGate(private val marginDb: Double,
 
 /**
  * Glasses-side speech flags for always-on audio: each A3 batch carries vpuMask/vadMask with one bit per
- * 20 ms Opus frame. Frames either mask marks as speech, plus a short lead-in and hangover, pass to ASR;
- * the rest is silenced so background noise is not transcribed. Flags arrive with their batch before the
- * decoder emits its PCM, which gives the lead-in for free. Without flags, audio passes unchanged.
+ * 20 ms Opus frame. A frame either mask marks, plus a short lead-in and hangover, counts as speech; together
+ * with [PhoneVoiceDetector] it decides which audio reaches the recognizer. Flags arrive with their batch before
+ * the decoder emits its PCM, which gives the lead-in for free.
  */
 internal class VoiceGate {
     private val flags = java.util.concurrent.ConcurrentLinkedDeque<Boolean>()
@@ -670,8 +721,8 @@ internal class VoiceGate {
     private var position = 0
     private var open = true
     private var hold = 0
-    @Volatile private var total = 0L
-    @Volatile private var passed = 0L
+    private var total = 0L
+    private var passed = 0L
     fun offer(frames: List<Boolean>) {
         flags.addAll(frames)
         // Dropped decoder packets would leave flags behind their audio; resync instead of drifting.
@@ -680,15 +731,16 @@ internal class VoiceGate {
     fun reset() { flags.clear(); position = 0; open = true; hold = 0; total = 0; passed = 0 }
     /** Thread safe; keeps statistics. */
     fun clearFlags() = flags.clear()
-    fun summary() = if (total == 0L) "" else "안경 음성 감지: 전체의 ${passed * 100 / total}%를 인식에 사용"
-    /** Writer thread. Returns a copy with non-speech frames zeroed. */
-    fun apply(pcm: ConversationPCM): ConversationPCM {
-        if (total == 0L && flags.isEmpty()) return pcm
-        val out = pcm.channels.map { it.copyOf() }
-        for (index in 0 until pcm.frames) {
+    /**
+     * Writer thread. Whether any of the next [frames] samples is speech by the glasses' flags (with lead-in and
+     * hangover). Frames without flags count as not speech: the phone's detector decides those.
+     */
+    fun speech(frames: Int): Boolean {
+        var any = false
+        for (index in 0 until frames) {
             if (position == 0) {
                 val next = flags.pollFirst()
-                if (next == null) open = true
+                if (next == null) open = false
                 else {
                     total++
                     if (next || flags.asSequence().take(LEAD).any { it }) hold = HANG
@@ -696,10 +748,10 @@ internal class VoiceGate {
                     if (open) passed++
                 }
             }
-            if (!open) out.forEach { it[index] = 0f }
+            if (open) any = true
             position = (position + 1) % FRAME
         }
-        return ConversationPCM(out)
+        return any
     }
     private companion object {
         const val FRAME = 320       // 20 ms at 16 kHz
@@ -707,4 +759,36 @@ internal class VoiceGate {
         const val HANG = 25         // 500 ms after speech
         const val MAX_PENDING = 150
     }
+}
+
+/**
+ * The phone's own speech detector (silero VAD) for always-on audio: catches voices the glasses do not flag (they
+ * favour the wearer). Speech by sound, not loudness, so steady noise stays out. Writer thread only.
+ */
+internal class PhoneVoiceDetector(context: Context) {
+    private val vad = Vad(context.assets, VadModelConfig(
+        sileroVadModelConfig = SileroVadModelConfig("voice-models/silero-vad.onnx", minSilenceDuration = 0.3f, maxSpeechDuration = 20f),
+        sampleRate = 16000, numThreads = 1))
+    private val window = FloatArray(WINDOW)
+    private var size = 0
+    /** Last decision; a 20 ms chunk often completes no 32 ms window and keeps it. */
+    private var detected = false
+    /** Whether speech is heard anywhere in this chunk (channels mixed). */
+    fun speech(pcm: ConversationPCM): Boolean {
+        var any = detected
+        for (i in 0 until pcm.frames) {
+            var sum = 0f
+            pcm.channels.forEach { sum += it[i] }
+            window[size++] = sum / pcm.channels.size
+            if (size == WINDOW) {
+                vad.acceptWaveform(window.copyOf()); size = 0
+                detected = vad.isSpeechDetected()
+                if (detected) any = true
+                while (!vad.empty()) vad.pop()
+            }
+        }
+        return any
+    }
+    fun release() = vad.release()
+    private companion object { const val WINDOW = 512 }
 }

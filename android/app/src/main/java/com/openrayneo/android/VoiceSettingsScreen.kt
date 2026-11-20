@@ -116,7 +116,7 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
             GateSlider(drafts, "selfVoiceHoldMs", "말 끝 유지 시간", 300f, 0f..1000f, 9, { "${it.toInt()} ms" },
                 "내 말 끝이 상대 말로 남으면 늘리세요.")
             SectionLabel("종일 기록")
-            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(drafts["glassesVoiceGate"] != "false", { drafts["glassesVoiceGate"] = it.toString() }); Text("안경이 말소리로 표시한 구간만 받아 적기") }
+            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(drafts["glassesVoiceGate"] != "false", { drafts["glassesVoiceGate"] = it.toString() }); Text("종일 기록: 말소리가 들린 구간만 받아 적기 (조용할 때는 인식 비용 없음)") }
             SectionLabel("Hey RayNeo 깨우기")
             VoiceField(model, "nativeIdleCloseSeconds", "말이 없으면 창 닫기까지 초 (0이면 닫지 않음)", DEFAULT_NATIVE_IDLE_CLOSE_SECONDS.toString())
             GateSlider(drafts, "bargeInLevelDb", "답변 끊기 소리 크기", -30f, -60f..-10f, 49, { "${it.toInt()} dBFS" },

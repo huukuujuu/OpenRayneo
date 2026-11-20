@@ -53,8 +53,8 @@ internal object SettingFixes {
             Fix("other-noise", "시끄러운 곳에서 상대방 말이 무시돼요", "주변 소음을 내 목소리로 착각하지 않게 판단 하한을 올립니다.", listOf(Step(floor, +5.0))),
         )),
         Group("종일 기록", listOf(
-            Fix("gate-off", "시끄러울 때 내 말이 기록에서 빠져요", "안경이 말소리로 표시한 구간만 듣던 것을 끄고 모두 받아 적습니다.", flag = "glassesVoiceGate" to false),
-            Fix("gate-on", "조용한데 잡음이 글자로 적혀요", "안경이 말소리로 표시한 구간만 받아 적습니다.", flag = "glassesVoiceGate" to true),
+            Fix("gate-off", "시끄러울 때 내 말이 기록에서 빠져요", "말소리 판단 없이 모든 소리를 받아 적습니다. 빠지는 말은 줄지만 조용한 시간에도 인식 비용이 나옵니다.", flag = "glassesVoiceGate" to false),
+            Fix("gate-on", "조용한데 잡음이 글자로 적혀요", "말소리가 들린 구간만 받아 적습니다. 조용한 시간은 인식 서버로 보내지 않아 비용도 줄어듭니다.", flag = "glassesVoiceGate" to true),
         )),
         Group("Hey RayNeo 깨우기", listOf(
             Fix("popup-long", "깨우기 창이 너무 오래 떠 있어요", "말이 없을 때 창을 더 빨리 닫습니다.", listOf(Step(idleClose, -5.0))),
