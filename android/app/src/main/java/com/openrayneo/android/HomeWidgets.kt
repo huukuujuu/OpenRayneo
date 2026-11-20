@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
 internal data class HomeWidgetsState(
     val stocks: List<JSONObject> = emptyList(), val stockResults: List<JSONObject> = emptyList(),
     val clock: JSONObject? = null, val clockResults: List<JSONObject> = emptyList(),
-    val userName: String = "", val notice: String = "")
+    val userName: String = "", val notice: String = "", val mail: String = "")
 
 /**
  * Stock, world clock and mail widgets and the user name, in the official app's formats (snoop capture 2026-11-20):
@@ -87,16 +87,36 @@ internal class HomeWidgets(context: Context, private val content: CompanionConte
         }
     }
 
-    // Stocks (Yahoo Finance public endpoints, no key; prices may be delayed).
+    // Stocks: prices from Yahoo Finance (public, no key, may be delayed). Yahoo search rejects Korean text (HTTP 400),
+    // so Korean names go through Naver's stock autocomplete and are mapped to Yahoo symbols.
     fun searchStocks(query: String): JSONObject {
+        val text = query.trim()
+        val rows = if (text.any { it.code > 0x7f }) naverStocks(text) else yahooStocks(text)
+        update { it.copy(stockResults = rows) }
+        return JSONObject().put("results", JSONArray(rows)).put("message", if (rows.isEmpty()) "찾은 종목이 없습니다" else "종목 ${rows.size}개를 찾았습니다")
+    }
+    private fun yahooStocks(query: String): List<JSONObject> {
         val url = "https://query2.finance.yahoo.com/v1/finance/search".toHttpUrl().newBuilder()
             .addQueryParameter("q", query).addQueryParameter("quotesCount", "10").addQueryParameter("newsCount", "0").build().toString()
-        val rows = get(url).optJSONArray("quotes").objects().filter { it.optString("quoteType") in setOf("EQUITY", "ETF", "INDEX") }.map {
+        return get(url).optJSONArray("quotes").objects().filter { it.optString("quoteType") in setOf("EQUITY", "ETF", "INDEX") }.map {
             JSONObject().put("symbol", it.getString("symbol")).put("name", it.optString("longname").ifBlank { it.optString("shortname") })
                 .put("exchange", it.optString("exchDisp").ifBlank { it.optString("exchange") })
         }
-        update { it.copy(stockResults = rows) }
-        return JSONObject().put("results", JSONArray(rows)).put("message", if (rows.isEmpty()) "찾은 종목이 없습니다" else "종목 ${rows.size}개를 찾았습니다")
+    }
+    private fun naverStocks(query: String): List<JSONObject> {
+        val url = "https://ac.stock.naver.com/ac".toHttpUrl().newBuilder().addQueryParameter("q", query)
+            .addQueryParameter("target", "stock,index").build().toString()
+        return get(url).optJSONArray("items").objects().mapNotNull { item ->
+            val code = item.optString("code")
+            val symbol = when {
+                item.optString("category") == "index" -> NAVER_INDEXES[code]
+                item.optString("nationCode") == "KOR" -> when (item.optString("typeCode")) { "KOSPI" -> "$code.KS"; "KOSDAQ" -> "$code.KQ"; else -> null }
+                item.optString("nationCode") == "USA" -> code.replace('.', '-')
+                item.optString("typeCode") == "TOKYO" -> "$code.T"
+                else -> null
+            } ?: return@mapNotNull null
+            JSONObject().put("symbol", symbol).put("name", item.optString("name")).put("exchange", item.optString("typeName"))
+        }.take(10)
     }
     fun addStock(row: JSONObject) {
         check(state.stocks.size < 6) { "주식은 6개까지 추가할 수 있습니다" }
@@ -113,6 +133,7 @@ internal class HomeWidgets(context: Context, private val content: CompanionConte
         stocksAt = System.currentTimeMillis()
         val rows = state.stocks.map { stock -> quote(stock) }
         content.launcher("stock_update", JSONArray(rows).toString())
+        log("주식 ${rows.size}개를 안경에 보냈습니다")
         return JSONObject().put("stocks", JSONArray(rows))
     }
     private fun quote(stock: JSONObject): JSONObject {
@@ -128,9 +149,10 @@ internal class HomeWidgets(context: Context, private val content: CompanionConte
         val now = System.currentTimeMillis() / 1000
         val trading = period != null && now in period.optLong("start")..period.optLong("end")
         fun round(value: Double) = Math.round(value * 100) / 100.0
+        val whole = !symbol.startsWith("^") && meta.optString("currency") in setOf("KRW", "JPY")
         return JSONObject().put("code", symbol.substringBefore('.')).put("exchange", stock.optString("exchange")).put("micCode", "")
             .put("name", stock.optString("name")).put("percent", round(if (previous == 0.0) 0.0 else (price - previous) / previous * 100))
-            .put("open", round(open)).put("realtime", round(price)).put("realtime_str", String.format(Locale.ROOT, "%.2f", price))
+            .put("open", round(open)).put("realtime", round(price)).put("realtime_str", if (whole) String.format(Locale.ROOT, "%.0f", price) else String.format(Locale.ROOT, "%.2f", price))
             .put("name_reverse", false).put("is_open", trading).put("total", 0).put("last_close", round(previous)).put("quarter", JSONArray())
     }
 
@@ -164,11 +186,14 @@ internal class HomeWidgets(context: Context, private val content: CompanionConte
         val version = MailFeed.version; val mails = MailFeed.snapshot(); mailVersion = version
         val format = DateTimeFormatter.ofPattern("M월 d일 HH:mm")
         val rows = mails.take(1).map { mail ->
-            JSONObject().put("sender", mail.sender).put("sender_name", mail.sender).put("title", mail.subject).put("preview", mail.preview)
+            JSONObject().put("sender", mail.account.ifBlank { mail.sender }).put("sender_name", mail.sender).put("title", mail.subject).put("preview", mail.preview)
                 .put("time", Instant.ofEpochMilli(mail.postedAt).atZone(ZoneId.systemDefault()).format(format))
         }
         content.launcher("mail_update", JSONArray().put(JSONObject().put("provider", "gmail").put("provider_id", "1")
             .put("unread", mails.size).put("mails", JSONArray(rows))).toString())
+        val summary = if (mails.isEmpty()) "휴대폰에 떠 있는 Gmail 알림이 없어 빈 메일함을 보냈습니다"
+            else "Gmail 알림 ${mails.size}개 중 최신 메일을 보냈습니다: ${mails.first().sender} · ${mails.first().subject}"
+        log(summary); update { it.copy(mail = summary) }
         return JSONObject().put("unread", mails.size)
     }
 
@@ -184,7 +209,7 @@ internal class HomeWidgets(context: Context, private val content: CompanionConte
     }
 
     private fun get(url: String): JSONObject = http.newCall(Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()).execute().use { response ->
-        check(response.isSuccessful) { "주식 요청 실패: HTTP ${response.code}" }; JSONObject(checkNotNull(response.body).string())
+        check(response.isSuccessful) { "요청 실패: HTTP ${response.code}" }; JSONObject(checkNotNull(response.body).string())
     }
     fun close() { http.dispatcher.cancelAll(); http.dispatcher.executorService.shutdown(); http.connectionPool.evictAll() }
 
@@ -200,5 +225,6 @@ internal class HomeWidgets(context: Context, private val content: CompanionConte
             "시애틀" to "America/Los_Angeles", "밴쿠버" to "America/Vancouver", "호놀룰루" to "Pacific/Honolulu",
             "멕시코시티" to "America/Mexico_City", "상파울루" to "America/Sao_Paulo", "시드니" to "Australia/Sydney",
             "멜버른" to "Australia/Melbourne", "오클랜드" to "Pacific/Auckland")
+        val NAVER_INDEXES = mapOf("KOSPI" to "^KS11", "KOSDAQ" to "^KQ11", "KPI200" to "^KS200")
     }
 }

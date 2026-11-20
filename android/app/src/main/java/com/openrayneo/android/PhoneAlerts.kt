@@ -12,7 +12,7 @@ import org.json.JSONObject
 /** Gmail notifications on the phone, for the glasses' mail widget (no Google sign-in needed). */
 internal object MailFeed {
     const val PACKAGE = "com.google.android.gm"
-    data class Mail(val key: String, val sender: String, val subject: String, val preview: String, val postedAt: Long)
+    data class Mail(val key: String, val sender: String, val subject: String, val preview: String, val postedAt: Long, val account: String)
     private val mails = linkedMapOf<String, Mail>()
     @Volatile var version = 0; private set
 
@@ -26,7 +26,9 @@ internal object MailFeed {
         // The expanded text is "subject\npreview".
         val big = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
         val preview = big.removePrefix(subject).trim().take(200)
-        mails[item.key] = Mail(item.key, sender, subject, preview, item.postTime); version++
+        // Gmail puts the receiving account's address in the sub text; the official widget sends it as `sender`.
+        val account = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
+        mails[item.key] = Mail(item.key, sender, subject, preview, item.postTime, account); version++
     }
     @Synchronized fun removed(key: String) { if (mails.remove(key) != null) version++ }
     @Synchronized fun reset(items: List<StatusBarNotification>) { mails.clear(); version++; items.forEach(::posted) }

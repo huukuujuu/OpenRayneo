@@ -3,6 +3,7 @@
 package com.openrayneo.android
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -24,8 +25,8 @@ internal fun CompanionContentScreen(model: AppModel) {
     var page by rememberSaveable { mutableIntStateOf(0) }
     var cityQuery by rememberSaveable { mutableStateOf("") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("위젯", "일정", "날씨", "주식", "세계 시계").forEachIndexed { i, name -> FilterChip(page == i, { page = i }, label = { Text(name) }) }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("위젯", "일정", "날씨", "주식", "세계 시계", "메일").forEachIndexed { i, name -> FilterChip(page == i, { page = i }, label = { Text(name) }) }
         }
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         Note("할 일은 앱 홈에서 관리합니다. 안경이 연결되면 안경 할 일 목록과 자동으로 맞춥니다.")
@@ -37,6 +38,7 @@ internal fun CompanionContentScreen(model: AppModel) {
             }
             3 -> StockSettings(model)
             4 -> ClockSettings(model)
+            5 -> MailSettings(model)
             1 -> CalendarSettings(model, editable)
             2 -> {
                 ToolButton(onClick = { model.attempt { val content = model.service().content
@@ -84,7 +86,7 @@ private fun DashboardLayoutEditor(model: AppModel, open: (Int) -> Unit) {
         else -> ""
     }
     // Where each widget is set up: tab index in this screen, or null when there is nothing to set.
-    val page = mapOf(1 to 2, 3 to 1, 4 to 3, 6 to 4)
+    val page = mapOf(1 to 2, 3 to 1, 4 to 3, 5 to 5, 6 to 4)
     SectionLabel("홈 스타일")
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         listOf("표준", "간결", "대각 분할").forEachIndexed { index, title ->
@@ -115,7 +117,24 @@ private fun DashboardLayoutEditor(model: AppModel, open: (Int) -> Unit) {
         }
         if (widgets.size >= 5) Note("위젯은 5개까지 넣을 수 있습니다. 하나를 제거하면 추가할 수 있습니다.")
     }
-    Note("메일 위젯은 휴대폰의 Gmail 알림을 보여 줍니다(로그인 불필요, 알림 접근 권한 필요). 안 읽은 수는 휴대폰에 떠 있는 Gmail 알림 수입니다.")
+}
+
+/** Mail widget: no Google sign-in. The newest Gmail notification on the phone, read with notification access. */
+@Composable
+private fun MailSettings(model: AppModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val access = model.state.notificationConnected
+    SectionLabel("Gmail 연결 방식")
+    Note("공식 앱처럼 Google 계정에 로그인하지 않습니다. 휴대폰 Gmail 앱이 띄운 알림을 읽어 최신 메일 1개와 알림 수를 안경 메일 위젯에 보냅니다.")
+    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Text(if (access) "알림 접근 권한: 허용됨" else "알림 접근 권한: 필요", Modifier.weight(1f))
+        TextButton(onClick = { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }) { Text(if (access) "설정 열기" else "허용하기") }
+    }
+    Note("휴대폰 설정 > 알림 > 기기 및 앱 알림(알림 읽기)에서 OpenRayneo Android를 켭니다. Gmail 앱의 알림도 켜져 있어야 합니다.")
+    ToolButton(onClick = { model.attempt { model.service().widgets.background("메일 보내기") { model.service().widgets.pushMail() } } },
+        enabled = model.state.glasses.link.phase == LinkPhase.FULL) { Text("메일 위젯 지금 보내기") }
+    model.state.widgets.mail.takeIf { it.isNotBlank() }?.let { Note(it) }
 }
 
 private val WIDGET_NAMES = linkedMapOf(1 to "날씨", 3 to "일정", 4 to "주식", 5 to "메일", 6 to "세계 시계", 2 to "할 일")
