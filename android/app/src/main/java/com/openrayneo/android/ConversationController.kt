@@ -308,6 +308,8 @@ internal class ConversationController(private val context: Context, private val 
         }, use = when (state.source) {
             ConversationSource.NATIVE -> AsrUse.WAKE
             ConversationSource.REALTIME -> AsrUse.LIVE
+            // Gated spans (also live catch-up) go whole to the non-streaming model; the assistant still runs at the round end.
+            ConversationSource.ALWAYS_ON -> if (gating && !replaying && !AsrModels.batchRefused) AsrUse.SPAN else AsrUse.RECORD
             else -> AsrUse.RECORD
         })
         rounds[round] = info; activeASR[channel] = round; round.start()
@@ -440,7 +442,7 @@ internal class ConversationController(private val context: Context, private val 
             override fun run() {
                 if (token != generation || epoch != asrEpoch || closing || !state.running) return
                 try {
-                    if (activeASR.values.any { !it.canAcceptAudio() }) { worker.postDelayed(this, 100); return }
+                    if (activeASR.values.any { !it.canAcceptAudio() } || BatchASR.busy()) { worker.postDelayed(this, 100); return }
                     val pcm = tail?.nextBlock()
                     if (pcm != null) { val begin = tailSamples; tailSamples += pcm.frames; if (!live) samples = tailSamples; process(pcm, begin, catchUpSpeech(live, pcm)) }
                     else if (!live && tail?.finished == true) { replayReadComplete = true; stop(); return }
@@ -486,7 +488,7 @@ internal class ConversationController(private val context: Context, private val 
             worker.post {
                 if (quickStop) deferredProcessing = true
                 if (liveBackfill && !deferredProcessing) runCatching {
-                    while (activeASR.values.all { it.canAcceptAudio() }) { val pcm = tail?.nextBlock() ?: break; val begin = tailSamples; tailSamples += pcm.frames; process(pcm, begin, catchUpSpeech(true, pcm)) }
+                    while (activeASR.values.all { it.canAcceptAudio() } && !BatchASR.busy()) { val pcm = tail?.nextBlock() ?: break; val begin = tailSamples; tailSamples += pcm.frames; process(pcm, begin, catchUpSpeech(true, pcm)) }
                 }.onFailure { pauseLive(it.message ?: "마무리 후 보충 대기") }
                 val pending = if (liveBackfill) deferredProcessing || tailSamples < count else deferredProcessing || record?.processingPending == true
                 record = record?.copy(audioSamples = count, audioPending = false, endedAt = record?.endedAt ?: System.currentTimeMillis(), processingPending = pending)

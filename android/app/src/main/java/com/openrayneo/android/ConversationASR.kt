@@ -3,11 +3,15 @@
 package com.openrayneo.android
 
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okio.Buffer
 import okio.ByteString
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * What the recognized text is for. The sentence end is when the text goes to the LLM, so each use has its own model
@@ -20,13 +24,19 @@ internal enum class AsrUse(val sentenceSilenceMs: Int) {
     LIVE(700),
     /** Always-on, meetings and other records: tolerate pauses while thinking. */
     RECORD(1200),
+    /** Gated always-on speech spans: nothing is shown live, so each span goes whole to the cheaper non-streaming model ([BatchASR]). */
+    SPAN(0),
 }
 
 internal object AsrModels {
     const val SHORT = "qwen-audio-3.1-asr-flash-message"
     const val STREAMING = "qwen-audio-3.1-asr-flash-streaming"
+    /** Non-streaming HTTP model for [AsrUse.SPAN]: about a sixth of the streaming model's input token price (international list, 2026-11). */
+    const val BATCH = "qwen-audio-3.1-asr-flash"
     /** The service refused the default streaming model before starting (e.g. not offered on this endpoint): use SHORT until restart. */
     @Volatile var streamingRefused = false
+    /** The service refused [BATCH] (model, path or parameters): always-on falls back to streaming until restart. */
+    @Volatile var batchRefused = false
     fun model(config: JSONObject, use: AsrUse): String = if (use == AsrUse.WAKE) config.optString("asrModelWake").trim().ifEmpty { SHORT }
         else config.optString("asrModelLive").trim().ifEmpty { if (streamingRefused) SHORT else STREAMING }
     fun isDefaultStreaming(config: JSONObject, use: AsrUse) = use != AsrUse.WAKE && config.optString("asrModelLive").isBlank()
@@ -142,4 +152,111 @@ internal class ConversationASR(config: JSONObject, private val use: AsrUse,
     }
     private fun fail(message: String) { ended = true; pending.clear(); socket?.cancel(); release(); failed(message) }
     private fun release() { http.dispatcher.executorService.shutdown(); http.connectionPool.evictAll() }
+}
+
+/**
+ * Always-on speech spans over the non-streaming Bailian HTTP model: audio is held on the phone and sent as a WAV
+ * when the span ends, or every [CHUNK_MS] of continuous speech (the model takes at most 5 minutes per request).
+ * Results stream back as SSE sentence events; timestamps are rebased onto this round like [ConversationASR].
+ */
+internal class BatchASR(config: JSONObject, private val sentence: (String, Long, Long, String, List<SpeechWord>) -> Unit,
+    private val failed: (String) -> Unit, private val completed: () -> Unit) : SpeechRound {
+    private val task = UUID.randomUUID().toString()
+    private val key = config.optString("asrKey").trim()
+    private val model = config.optString("asrModelBatch").trim().ifEmpty { AsrModels.BATCH }
+    // Same host as the streaming socket: wss://host/api-ws/v1/inference -> https://host/api/v1/services/aigc/multimodal-generation/generation
+    private val address = config.optString("asrUrl").ifBlank { AppSettings.DEFAULT_ASR_URL }.trim()
+        .replaceFirst("wss://", "https://").substringBefore("/api-ws/") + "/api/v1/services/aigc/multimodal-generation/generation"
+    private val languages = config.optString("asrLanguage").split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+        .connectTimeout(20, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build()
+    private val sender = Executors.newSingleThreadExecutor()
+    private val chunk = Buffer()
+    private var chunkStartMs = 0L
+    private var appended = 0L
+    private var finishing = false
+    @Volatile private var ended = false
+    private val seen = mutableSetOf<String>()
+
+    override fun start() { require(key.isNotEmpty()) { "먼저 Bailian ASR API Key를 입력하세요" } }
+    @Synchronized override fun canAcceptAudio() = !ended && !finishing && !busy()
+    @Synchronized override fun append(samples: FloatArray) {
+        if (ended || finishing) return
+        for (sample in samples) chunk.writeShortLe((sample * 32768).toInt().coerceIn(-32768, 32767))
+        appended += samples.size
+        if (chunk.size >= CHUNK_MS * 32) flush()
+    }
+    @Synchronized override fun finish() {
+        if (ended || finishing) return
+        finishing = true; flush()
+        sender.execute { if (!ended) { ended = true; release(); completed() } }
+        sender.shutdown()
+    }
+    // shutdown(), not shutdownNow(): queued uploads still run their finally (skipping the request) so [uploads] stays exact.
+    @Synchronized override fun cancel() { if (!ended) { ended = true; chunk.clear(); sender.shutdown(); http.dispatcher.cancelAll(); release() } }
+    private fun flush() {
+        if (chunk.size == 0L) return
+        val pcm = chunk.readByteArray(); val offset = chunkStartMs; chunkStartMs = appended * 1000 / 16000
+        uploads.incrementAndGet()
+        sender.execute {
+            // Anything thrown here would kill the app from the executor thread or let the round complete without its text.
+            try { if (!ended) send(pcm, offset) } catch (error: Throwable) { fail("ASR 응답 처리 실패($model): ${error.message ?: error.javaClass.simpleName}") }
+            finally { uploads.decrementAndGet() }
+        }
+    }
+    private fun send(pcm: ByteArray, offset: Long) {
+        val audio = "data:audio/wav;base64," + android.util.Base64.encodeToString(wav(pcm), android.util.Base64.NO_WRAP)
+        val parameters = JSONObject().put("format", "wav").put("sample_rate", "16000")
+        if (languages.isNotEmpty()) parameters.put("language_hints", org.json.JSONArray(languages))
+        val body = JSONObject().put("model", model).put("parameters", parameters).put("input", JSONObject().put("messages", org.json.JSONArray().put(
+            JSONObject().put("role", "user").put("content", org.json.JSONArray().put(JSONObject().put("type", "input_audio")
+                .put("input_audio", JSONObject().put("data", audio)))))))
+        val request = Request.Builder().url(address).header("Authorization", "Bearer $key").header("X-DashScope-SSE", "enable")
+            .post(body.toString().toRequestBody("application/json".toMediaType())).build()
+        try {
+            http.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                val events = text.lineSequence().filter { it.startsWith("data:") }.map { it.removePrefix("data:").trim() }.toList().ifEmpty { listOf(text.trim()) }
+                    .filter { it.startsWith("{") }.map(::JSONObject)
+                if (!response.isSuccessful) {
+                    val detail = events.firstOrNull()?.let { "${it.optString("code")} ${it.optString("message")}".trim() }.orEmpty()
+                    // Only a refusal of the model, path or access; key (401), balance, throttling or content errors (DataInspection, bad audio) are not.
+                    val refused = response.code == 404 || response.code in setOf(400, 403) &&
+                        Regex("model|notfound|not_found|accessdenied|access_denied|unsupported|url", RegexOption.IGNORE_CASE).containsMatchIn(detail)
+                    if (refused) AsrModels.batchRefused = true
+                    return fail("ASR 요청 실패($model): HTTP ${response.code} $detail".trim() + if (refused) " · 앱을 다시 시작할 때까지 실시간 인식 사용" else "")
+                }
+                events.forEach { handle(it, offset) }
+            }
+        } catch (error: java.io.IOException) { fail("ASR 연결 끊김($model): ${error.javaClass.simpleName}") }
+    }
+    private fun handle(data: JSONObject, offset: Long) {
+        if (ended) return
+        val output = data.optJSONObject("output") ?: return fail("ASR 요청 실패($model): ${data.optString("code")} ${data.optString("message")}".trim())
+        if (!output.has("sentence") && !output.has("sentences") && !output.has("text"))
+            return fail("ASR 응답 형식이 예상과 다름($model): output ${output.keys().asSequence().toList()}")
+        val list = output.optJSONArray("sentences")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) } } ?: listOfNotNull(output.optJSONObject("sentence"))
+        list.filter { s -> s.optBoolean("sentence_end") && listOf("begin_time", "end_time").all { s.has(it) && !s.isNull(it) } }.forEach { s ->
+            val content = s.optString("text").trim(); val id = "$task:$offset:${s.optString("sentence_id")}"
+            if (content.isEmpty() || !seen.add(id)) return@forEach
+            val words = s.optJSONArray("words")?.let { a -> (0 until a.length()).mapNotNull { index ->
+                val word = a.getJSONObject(index)
+                if (!word.has("begin_time") || word.isNull("begin_time") || !word.has("end_time") || word.isNull("end_time")) null
+                else SpeechWord(word.optString("text") + word.optString("punctuation"), offset + word.getLong("begin_time"), offset + word.getLong("end_time"))
+            } } ?: emptyList()
+            sentence(content, offset + s.getLong("begin_time"), offset + s.getLong("end_time"), id, words)
+        }
+    }
+    private fun wav(pcm: ByteArray): ByteArray = Buffer().apply {
+        writeUtf8("RIFF"); writeIntLe(36 + pcm.size); writeUtf8("WAVEfmt "); writeIntLe(16); writeShortLe(1); writeShortLe(1)
+        writeIntLe(16000); writeIntLe(32000); writeShortLe(2); writeShortLe(16); writeUtf8("data"); writeIntLe(pcm.size); write(pcm)
+    }.readByteArray()
+    @Synchronized private fun fail(message: String) { if (ended) return; ended = true; sender.shutdown(); release(); failed(message) }
+    private fun release() { http.dispatcher.executorService.shutdown(); http.connectionPool.evictAll() }
+    companion object {
+        private const val CHUNK_MS = 3 * 60 * 1000L
+        /** Uploads queued or running across all rounds: catch-up closes spans faster than real time, so it waits on this. */
+        private val uploads = AtomicInteger()
+        fun busy() = uploads.get() >= 2
+    }
 }

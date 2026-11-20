@@ -879,7 +879,8 @@ internal class BridgeService : Service() {
                 result.onFailure { onLog("ASR 단독 시험: 시험 음성 만들기 실패 ${it.message}") }.onSuccess { pcm ->
                     asrTesting = true
                     val translation = JSONObject(SpeechRounds.bilingual(this, base).toString()).put("asrLanguage", "ko,en")
-                    runAsrTest("깨우기 설정", base, pcm, AsrUse.WAKE) { runAsrTest("번역·실시간 설정(ko,en)", translation, pcm, AsrUse.LIVE) { asrTesting = false } }
+                    runAsrTest("깨우기 설정", base, pcm, AsrUse.WAKE) { runAsrTest("번역·실시간 설정(ko,en)", translation, pcm, AsrUse.LIVE) {
+                        runAsrTest("종일 기록 설정", base, pcm, AsrUse.SPAN) { asrTesting = false } } }
                 }
             }
         }

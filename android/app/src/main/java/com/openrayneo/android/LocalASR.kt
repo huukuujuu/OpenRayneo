@@ -57,7 +57,7 @@ internal object SpeechRounds {
             "local" -> LocalASR(context, config, sentence, failed, completed, interim)
             "stream" -> StreamASR(context, LocalModels.zipformer, null, sentence, failed, completed, interim)
             "nemotron" -> StreamASR(context, LocalModels.nemotron, nemotronLanguage(config), sentence, failed, completed, interim)
-            else -> ConversationASR(config, use, sentence, failed, completed, interim)
+            else -> if (use == AsrUse.SPAN) BatchASR(config, sentence, failed, completed) else ConversationASR(config, use, sentence, failed, completed, interim)
         }
 }
 
