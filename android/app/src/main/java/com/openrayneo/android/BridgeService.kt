@@ -183,6 +183,7 @@ internal class BridgeService : Service() {
                 if (source == ConversationSource.REALTIME) heard(segment.sourceChannel, segment.text, final = true)
             }, ::resumeBackground)
         conversations.partial = { text, wake -> main.post { voiceTransport.partial(text, wake) } }
+        conversations.log = { text -> main.post { onLog("화자 진단 $text") } }
         conversations.livePartial = { channel, text -> main.post { heard(channel, text, final = false) } }
         recordSync = RecordSyncServer(settings, conversations.repository, conversations.recordings, main, ::notifyUI, ::logText)
         if (settings.read().optBoolean("recordSyncEnabled")) recordSync.start()

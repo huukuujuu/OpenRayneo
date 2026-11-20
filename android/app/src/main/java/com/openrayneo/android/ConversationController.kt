@@ -26,6 +26,12 @@ internal class ConversationController(private val context: Context, private val 
     private val stopped: () -> Unit) {
     /** Unfinished ASR text of the current native wake (text, wake id), on the worker thread. */
     var partial: ((String, String) -> Unit)? = null
+    /** Speaker diagnostics for the app log (any thread). */
+    @Volatile var log: ((String) -> Unit)? = null
+    // Worker thread: how sentences were attributed in this record, logged when it ends.
+    private val speakerSentences = mutableMapOf<String, Int>()
+    private var splitSentences = 0
+    private var unknownSentences = 0
     /** Live (realtime) record: the unfinished sentence of a channel, for the live transcript on the glasses. */
     var livePartial: ((Int, String) -> Unit)? = null
     private val gate = VoiceGate()
@@ -109,7 +115,8 @@ internal class ConversationController(private val context: Context, private val 
     private val summaryJobs = ArrayDeque<Triple<String, String, String>>()
     private fun engine(channel: Int): SpeakerEngine = engines.getOrPut(channel) {
         SpeakerEngine(context, { repository.people.filter { it.mergedInto == null } },
-            { settings.read().optDouble("speakerThreshold", 0.7).toFloat() }, { begin, end -> classified(channel, begin, end) })
+            { settings.read().optDouble("speakerThreshold", 0.7).toFloat() }, { begin, end -> classified(channel, begin, end) },
+            { message -> log?.invoke("c$channel $message") })
     }
     private fun fixedSelf(channel: Int) = SpeakerChannelPolicy.fixedSelf(record!!.channelPolicy, channel) && state.mode != ConversationMode.ENROLL
     private fun lanes() = 1..(record?.audioChannels ?: 1)
@@ -163,6 +170,7 @@ internal class ConversationController(private val context: Context, private val 
             deferredProcessing = mode != ConversationMode.ENROLL && (!SpeechRounds.ready(context, cfg) || resourcePauseReason != null)
             pendingSentences.clear(); pendingAgent.clear(); dispatching = false; manualSpeakers.clear(); laneStarts.clear(); inputThrough.clear()
             lastSpeechEnd = Long.MIN_VALUE / 2; preroll.clear(); gatedTotal = 0; gatedSent = 0; gatedRound = false
+            speakerSentences.clear(); splitSentences = 0; unknownSentences = 0
             resamplers = List(2) { ConversationAudio() }; enrollmentTarget = target
             record = ConversationRecord(mode = mode, source = source, audioAnchors = listOf(AudioAnchor(0, System.currentTimeMillis())),
                 channelPolicy = "pending_actual_channels", audioPending = mode != ConversationMode.ENROLL, processingPending = deferredProcessing)
@@ -383,6 +391,11 @@ internal class ConversationController(private val context: Context, private val 
                     groups[groups.lastIndex] = last.copy(text = last.text + attributed.text, endMS = attributed.endMS, words = last.words + attributed.words, timelineEndAt = attributed.timelineEndAt)
                 else groups += attributed
             }
+            // Counted once per sentence actually added (a replay may meet sentences already saved), by full label.
+            val speakers = groups.filter { group -> record!!.segments.none { it.id == group.id } }.map { it.speaker }.distinct()
+            if (speakers.size > 1) splitSentences++
+            speakers.forEach { label -> if (label.endsWith(UNKNOWN_SPEAKER) || label.endsWith(MIXED_SPEAKER)) unknownSentences++
+                else speakerSentences.merge(label, 1, Int::plus) }
             groups.forEach { segment ->
                 val old = record!!
                 if (old.segments.none { it.id == segment.id }) {
@@ -517,6 +530,14 @@ internal class ConversationController(private val context: Context, private val 
             val contextGeneration = agentContextGeneration
             main.post { if (contextGeneration == agentContextGeneration) request(voice) }
         }
+        if (state.mode != ConversationMode.ENROLL) {
+            engines.forEach { (channel, engine) -> if (engine.hasActivity()) log?.invoke("c$channel 기록 끝 요약: ${engine.summary()}") }
+            if (speakerSentences.isNotEmpty() || unknownSentences > 0)
+                log?.invoke("문장별 화자: ${speakerSentences.entries.sortedByDescending { it.value }.take(15).joinToString { "${it.key} ${it.value}" }}" +
+                    (if (speakerSentences.size > 15) " 외 ${speakerSentences.size - 15}개" else "") +
+                    " · 미지정/겹침 $unknownSentences · 한 문장 안에서 화자가 갈린 문장 $splitSentences")
+        }
+        speakerSentences.clear(); splitSentences = 0; unknownSentences = 0
         replaying = false; pendingSentences.clear(); pendingAgent.clear(); dispatching = false; engines.values.forEach { it.reset() }; manualSpeakers.clear(); closing = false
         preroll.clear(); gatedRound = false; catchUpVoice?.release(); catchUpVoice = null; writer.post { phoneVoice?.release(); phoneVoice = null }
         publish(state.copy(running = false, stopping = false, segments = finished?.segments.orEmpty(), activeRecord = null, records = repository.records, status = message))

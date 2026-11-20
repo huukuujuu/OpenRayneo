@@ -10,7 +10,9 @@ import kotlin.math.sqrt
 
 /** All native inference runs on the conversation worker, never on the decoder or UI thread. */
 internal class SpeakerEngine(context: Context, private val people: () -> List<VoicePerson>,
-    private val threshold: () -> Float, private val classified: (Long, Long) -> Unit) {
+    private val threshold: () -> Float, private val classified: (Long, Long) -> Unit,
+    /** Speaker diagnostics for the app log: new labels with why they did not join one, resets, per-record summary. */
+    private val log: (String) -> Unit = {}) {
     companion object {
         const val MODEL = "campplus-zh-16k-common/sherpa-2.0.1"
         /** Cosine at which a turn joins an existing speaker label (was 0.6 on the best single sample: one talker split into A, B, C…). */
@@ -26,7 +28,13 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
     data class Assignment(val speaker: String = UNKNOWN_SPEAKER, val personId: String? = null,
                           val score: Float? = null, val stable: Boolean = false, val mixed: Boolean = false,
                           val candidates: List<VoiceMatch> = emptyList(), val reason: String = "아직 충분히 선명한 음성을 얻지 못함")
-    private data class Cluster(val label: String, val samples: MutableList<FloatArray>, var lastSeenMS: Long, var self: Boolean = false)
+    private data class Cluster(val label: String, val samples: MutableList<FloatArray>, var lastSeenMS: Long, var self: Boolean = false,
+                               var turns: Int = 1, var speechMS: Long = 0)
+    /** Turns that got no label: too short (or no voiceprint) to start one and matching none either. */
+    private var shortUnmatched = 0
+    /** Labels dropped by the 2-minute window (not used for recordings, which keep their history). */
+    private var dropped = 0
+    private fun f(value: Float) = String.format(java.util.Locale.ROOT, "%.2f", value)
     private val extractor = SpeakerEmbeddingExtractor(context.assets,
         SpeakerEmbeddingExtractorConfig("voice-models/campplus-zh-16k.onnx", numThreads = 1))
     private val vad = Vad(context.assets, VadModelConfig(
@@ -50,6 +58,9 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
     var analyzedThroughMS = 0L; private set
 
     fun reset(offsetMS: Long = 0, meeting: Boolean = false, enrollment: Boolean = false, labelPrefix: String = "") {
+        // A reset inside a record (catch-up after a pause) starts new labels: log what came before, it is lost here.
+        if (clusters.isNotEmpty() && !enrollment && labelPrefix.isNotEmpty()) log("엔진 초기화 ${this.labelPrefix.ifEmpty { "-" }} → $labelPrefix, 버리는 라벨 ${summary()}")
+        shortUnmatched = 0; dropped = 0
         vad.reset(); vadWindowSize = 0; acceptedSamples = 0; analyzedThroughMS = offsetMS; evidence.clear(); clusters.clear(); nextLabel = 0; this.offsetMS = offsetMS; this.labelPrefix = labelPrefix; keepHistory = meeting; enrolling = enrollment
     }
     fun beginRound(offsetMS: Long) { flush(); vad.reset(); vadWindowSize = 0; acceptedSamples = 0; this.offsetMS = offsetMS; analyzedThroughMS = offsetMS }
@@ -105,6 +116,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
                 if (last > first) SpeakerInterval(first, last, turn.speaker) else null
             }
             val regions = speakerRegions(intervals)
+            val localSpeakers = intervals.map { it.speaker }.distinct().size
             val vectors = mutableMapOf<Int, FloatArray>()
             val labels = mutableMapOf<Int, String>()
             val matches = mutableMapOf<Int, Pair<String?, Float>?>()
@@ -124,8 +136,9 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
                 val short = count < 12_800
                 val match = vector?.let(::person)
                 if (vector != null && !short) vectors[speaker] = vector
-                labels[speaker] = vector?.let { cluster(it, end, isSelf = !short && match?.first != null, create = !short)?.label }
-                    ?: UNKNOWN_SPEAKER
+                val detail = "기록 ${end / 1000}초, 이 덩어리를 분리기가 ${localSpeakers}명으로 나눔" + (match?.let { ", 본인 목소리 유사도 ${f(it.second)}" } ?: "")
+                labels[speaker] = vector?.let { cluster(it, end, count * 1000L / 16000, isSelf = !short && match?.first != null, create = !short, detail = detail)?.label }
+                    ?: UNKNOWN_SPEAKER.also { if (vector != null || count > 0) shortUnmatched++ }
                 matches[speaker] = if (short) null else match
             }
             regions.forEach { region ->
@@ -137,7 +150,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
                     if (mixed) UNKNOWN_SPEAKER else labels.getValue(speaker), match?.first, match?.second, mixed,
                     if (mixed) null else vectors[speaker])
             }
-            if (!keepHistory) { evidence.removeAll { it.endMS < end - 120_000 }; clusters.removeAll { it.lastSeenMS < end - 120_000 } }
+            if (!keepHistory) { evidence.removeAll { it.endMS < end - 120_000 }; dropped += clusters.count { it.lastSeenMS < end - 120_000 }; clusters.removeAll { it.lastSeenMS < end - 120_000 } }
             classified(begin, end)
         }
     }
@@ -166,7 +179,7 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
      * model), so a turn joins the closest label by its best match or the label's average voice. A turn matching the
      * enrolled self voice joins the self label. [create] false (short turns) only joins an existing label.
      */
-    private fun cluster(vector: FloatArray, endMS: Long, isSelf: Boolean = false, create: Boolean = true): Cluster? {
+    private fun cluster(vector: FloatArray, endMS: Long, speechMS: Long, isSelf: Boolean = false, create: Boolean = true, detail: String = ""): Cluster? {
         val selfCluster = if (isSelf) clusters.firstOrNull { it.self } else null
         val nearest = selfCluster?.let { it to 1f } ?: clusters.map { cluster ->
             cluster to maxOf(cluster.samples.maxOf { cosine(vector, it) }, cosine(vector, centroid(cluster.samples)))
@@ -177,12 +190,17 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
             val chosen = nearest.first
             chosen.lastSeenMS = endMS
             if (isSelf) chosen.self = true
+            chosen.turns++; chosen.speechMS += speechMS
             if (create) { chosen.samples += vector; if (chosen.samples.size > CLUSTER_SAMPLES) chosen.samples.removeAt(1) }
             return chosen
         }
         if (!create) return null
         val count = nextLabel++
-        return Cluster(labelPrefix + if (count < 26) ('A'.code + count).toChar().toString() else "S${count + 1}", mutableListOf(vector), endMS, isSelf).also { clusters += it }
+        return Cluster(labelPrefix + if (count < 26) ('A'.code + count).toChar().toString() else "S${count + 1}", mutableListOf(vector), endMS, isSelf, speechMS = speechMS).also {
+            clusters += it
+            log("새 라벨 ${it.label}: 발화 ${speechMS}ms, " + (nearest?.let { (c, score) -> "가장 가까운 ${c.label} ${f(score)} < 기준 ${f(needed)}" } ?: "첫 라벨") +
+                (if (isSelf) ", 본인으로 판정" else "") + ", $detail, 지금 라벨 ${clusters.size}개")
+        }
     }
     private fun centroid(samples: List<FloatArray>): FloatArray {
         val sum = FloatArray(samples[0].size)
@@ -224,6 +242,17 @@ internal class SpeakerEngine(context: Context, private val people: () -> List<Vo
             else -> "등록된 목소리와 일치함"
         }
         return Assignment(speaker.key, identity, ranked.firstOrNull()?.score, stable, mixed, ranked.take(2), reason)
+    }
+    /** One line per record: labels with turns and speech, short unmatched turns, and the closest pair of labels. */
+    fun hasActivity() = clusters.isNotEmpty() || shortUnmatched > 0
+    fun summary(): String {
+        val sorted = clusters.sortedByDescending { it.speechMS }
+        val labels = sorted.take(10).joinToString { "${it.label} ${it.turns}회 ${it.speechMS / 1000}초" + if (it.self) "(본인)" else "" } +
+            if (sorted.size > 10) " 외 ${sorted.size - 10}개" else ""
+        val centers = clusters.associateWith { centroid(it.samples) }
+        val pair = clusters.flatMapIndexed { i, a -> clusters.drop(i + 1).map { b -> Triple(a, b, cosine(centers.getValue(a), centers.getValue(b))) } }.maxByOrNull { it.third }
+        return "라벨 ${clusters.size}개" + (if (dropped > 0) "(2분 지나 버린 ${dropped}개 별도)" else "") + ": $labels · 라벨 없이 남은 짧은 발화 ${shortUnmatched}회" +
+            (pair?.let { (a, b, score) -> " · 가장 비슷한 두 라벨 ${a.label}–${b.label} ${f(score)}(합치는 기준 ${f(SAME_SPEAKER)})" } ?: "")
     }
     fun enrollment(): VoiceEnrollment.Assessment = VoiceEnrollment.assess(evidence.filter { !it.mixed && it.embedding != null }
         .map { VoiceEnrollment.Sample(it.beginMS, it.endMS, it.embedding!!) })
