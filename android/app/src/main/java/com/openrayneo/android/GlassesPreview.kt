@@ -98,6 +98,7 @@ internal fun GlassesOutputPreview(state: GlassesState) {
             session.content != content -> "업데이트 중 · 아래는 마지막으로 전송된 내용"
             session.mode == PageMode.NAVIGATION -> "내비게이션 · 전송된 내용"
             session.mode == PageMode.CAPTION -> "안경 실시간 자막 · 전송된 내용"
+            session.mode == PageMode.FLASHCARD -> "Anki · 전송된 카드"
             else -> "실시간 힌트 · 전송된 내용"
         }
     Surface(

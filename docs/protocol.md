@@ -180,6 +180,8 @@ SID는 start/audio/update/exit 전체를 관통해야 하며, SID가 일치하�
 자막 텍스트는 mode 3, 프롬프트 텍스트는 mode 4이며 status 0은 중간, 1은 최종이다. 내용에는 `source_transcript`와 선택적 번역이 들어간다. 공식 1.0.25 기준 mode 3은 전사 전용(번역 무시), mode 1은 classic 이중 언어(안경이 줄을 쌓고 고개 각도로 원문/번역을 바꿔 보여 줌)다. 안경 자막 페이지는 status 1을 줄로 쌓고 status 0은 열린 줄을 교체하므로, 이 앱은 번역(위)과 지금 말하는 원문(아래)을 합친 한 화면(약 100자)을 mode 3 status 0으로 보내 교체한다.
 프롬프트 시작은 보통 `{sid,trigger:1,force:false,code:0,settings:{mode:"conversation",source_language:"zh-CN",target_language:"zh-CN",save_audio:false,direction:"ahead"}}`를 쓴다.
 성공 결과는 code 1과 final_settings를 담는다. 자막 종료는 reason_code 10, 프롬프트 종료는 reason_code 2다.
+
+Anki는 휴대폰에서 시작한 별도 `0x13` 표시 세션에 질문이나 답안 한 면씩 보낸다. type 5의 mode 3/status 0은 열린 화면을 같은 sid에서 교체한다. 처음 카드를 열 때만 시작 요청을 보내고, 뒤집기나 다음 카드는 내용만 바꾼다. 새 Anki 세션의 첫 화면은 처음 전송한 뒤 750ms에 같은 sid와 내용으로 한 번 더 보낸다. 그 전에 카드나 페이지가 바뀌거나 세션이 닫히면 재전송을 취소한다. 긴 질문과 답안의 다음 쪽은 사용자가 직접 넘길 때 전송한다. 휴대폰은 이 세션의 오디오를 디코딩하지 않는다.
 `save_audio:false`는 type-4 오디오를 끄지 않으며 로컬 저장 여부도 결정하지 않는다.
 화면을 여는 것은 오디오/표시 진입점일 뿐이고, ASR, speaker, 의미 Agent 처리는 로컬 소프트웨어가 맡는다.
 
@@ -294,7 +296,7 @@ FileInfoSync에는 uuid/filename/filesize(uint64)/md5/bus_id가, chunk에는 uui
 1.0.25에는 안경 쪽 요청 모델 `GlassesListUpdateRequest`, `GlassesStartRequest`(원고 선택), `GlassesCueingStartRequest`(읽기 시작), `QuickLaunchConflictDecision`,
 `CheckState`, `ReadingMemorySync`, `ProgressUpdate`, `SettingsUpdate`가 있다. followSpeak용 오디오는 `0x14` type 9 data다.
 scroll은 followSpeak1/linear2/manual3이다. 설정과 페이지 내 강조 위치는 복원된 serializer를 따르고 mode를 추측하지 않는다.
-연결 복구 시 상태/checksum을 읽으며, 안경 위치로 로컬의 미저장 편집을 무조건 덮어쓰지 않는다.
+연결 복구 시 상태/checksum을 읽으며, 안경 위치로 로컬의 미저장 편집을 무조건 덮어쓰지 않는다. Android 스크롤은 type 10 응답으로 현재 원고 위치를 읽을 수 있으면 사용한다. 위치를 얻지 못하면 같은 원고의 마지막 type 8 위치 신호나 전송 위치를 사용한다. 한 줄 분량을 UTF-8 오프셋으로 계산하여 type 8의 pageOffset/highLightOffset과 함께 previewSync=true, autoSync=false, code=1을 보낸다. 원고 ID와 전송 및 확인 위치를 구분한다.
 구현: [TeleprompterRepository.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/TeleprompterRepository.swift),
 [TeleprompterFollowController.swift](https://github.com/huukuujuu/OpenRayneo/blob/a914718/Sources/OpenRayneoBridge/TeleprompterFollowController.swift).
 

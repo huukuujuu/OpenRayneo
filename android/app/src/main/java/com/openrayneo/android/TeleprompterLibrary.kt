@@ -11,10 +11,16 @@ import java.time.ZonedDateTime
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 internal data class TeleprompterState(val documents: List<JSONObject> = emptyList(), val active: String? = null,
-    val paused: Boolean = false, val busy: Boolean = false, val notice: String = "원고를 저장한 뒤 안경으로 전송")
-internal class TeleprompterLibrary(context: Context, private val requests: GlassesRequests, private val changed: () -> Unit) {
+    val paused: Boolean = false, val busy: Boolean = false, val notice: String = "원고를 저장한 뒤 안경으로 전송", val activeText: String? = null)
+internal class TeleprompterLibrary(
+    context: Context,
+    private val requests: GlassesRequests,
+    private val changed: () -> Unit,
+    private val log: (String) -> Unit,
+) {
     private val folder = File(context.filesDir, "scripts").apply { mkdirs() }
     @Volatile var state = TeleprompterState(documents = folder.listFiles().orEmpty().filter { it.extension == "json" }.map { JSONObject(it.readText()) }); private set
     private val messages = LinkedBlockingQueue<Pair<Int, JSONObject>>(64)
@@ -26,6 +32,17 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
     @Volatile private var task: String? = null
     @Volatile private var disconnected = false
     private var sequence = 0x5300
+    /** [at] and [paused] tell whether the glasses could have moved on since: auto-scroll keeps running unless paused. */
+    private data class ScriptPosition(val id: String, val offset: Int,
+        val at: Long = android.os.SystemClock.elapsedRealtime(), val paused: Boolean = false)
+    private val scrollPosition = AtomicReference<ScriptPosition?>()
+    // Readback can be rejected during glasses-initiated playback. Probe once until a new script starts.
+    private var queryScrollPosition = true
+
+    private fun beginPlaybackPosition(id: String) {
+        scrollPosition.set(ScriptPosition(id, 0))
+        queryScrollPosition = true
+    }
     fun save(title: String, text: String, id: String = UUID.randomUUID().toString(), refresh: Boolean = true): String {
         require(title.isNotBlank() && text.isNotBlank()); require(id.matches(Regex("[A-Za-z0-9-]{1,80}")))
         val document = JSONObject().put("did", id).put("title", title).put("text", text).put("updated", System.currentTimeMillis())
@@ -103,12 +120,14 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
             refreshGlasses()
             error("안경이 고른 원고가 휴대폰에 없어 목록을 다시 보냄")
         }
-        val content = document.getString("text").toByteArray(Charsets.UTF_8)
+        val text = document.getString("text")
+        val content = text.toByteArray(Charsets.UTF_8)
         val settings = settings(lastSpeed)
         messages.clear(); transfer.clear(); disconnected = false
         send(2, JSONObject(settings.toString()).put("action", 2).put("did", id).put("total", content.size)
             .put("pageOffset", 0).put("highLightOffset", 0).put("code", 1))
-        state = state.copy(active = id, paused = true)
+        beginPlaybackPosition(id)
+        state = state.copy(active = id, paused = true, activeText = text)
         transferFile(id, content)
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
         while (true) {
@@ -143,8 +162,16 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
                 }
                 3 -> if (!glassesRequests.offer(message.type to body)) { glassesRequests.poll(); glassesRequests.offer(message.type to body) }
             }
+            if (message.type == 8) {
+                val id = body.optString("did")
+                val offset = body.optInt("pageOffset", -1)
+                if (offset >= 0) scrollPosition.updateAndGet {
+                    if (it?.id == id) ScriptPosition(id, offset, paused = state.paused) else it
+                }
+            }
             if (body.optInt("action") == 1 && body.optString("did") == state.active && message.type == 6) {
-                state = state.copy(active = null, paused = false, notice = "안경이 프롬프터를 종료함"); changed()
+                scrollPosition.set(null)
+                state = state.copy(active = null, paused = false, activeText = null, notice = "안경이 프롬프터를 종료함"); changed()
             }
         }
     }
@@ -162,7 +189,8 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
         send(1, JSONObject().put("action", 2).put("type", 3).put("total", state.documents.size)
             .put("chunkinfo", JSONObject().put("chunkid", 1).put("total_items", 1).put("islast", true)).put("items", JSONArray().put(item)))
         send(2, JSONObject(settings.toString()).put("action", 1).put("did", id).put("total", content.size).put("pageOffset", 0).put("highLightOffset", 0))
-        state = state.copy(active = id, paused = true)
+        beginPlaybackPosition(id)
+        state = state.copy(active = id, paused = true, activeText = text)
         transferFile(id, content)
         accepted(2, id)
         Thread.sleep(350) // Firmware startup transition, measured on 1.0.5.12.
@@ -207,17 +235,104 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
             check(body.optInt("code") == 1 || type == 2 && body.optInt("code") == 7) { "안경이 프롬프터를 거부함: ${body.optInt("code")}" }; return
         }
     }
+    fun scroll(down: Boolean, fromRemote: Boolean) {
+        val direction = if (down) "아래로" else "위로"
+        log("프롬프터 스크롤 입력: ${if (fromRemote) "리모컨" else "휴대폰"} ($direction)")
+        operation({ scrollBlocking(down, direction) }) { result ->
+            result.fold(
+                { log("프롬프터 스크롤: ${it.optString("message")} (${it.optInt("beforeOffset", -1)} → ${it.optInt("requestedOffset", -1)}, 응답 ${it.optInt("actualOffset", -1)})") },
+                { log("프롬프터 스크롤 실패: ${it.message}") },
+            )
+        }
+    }
+
+    private fun scrollBlocking(down: Boolean, direction: String): JSONObject {
+        val id = checkNotNull(state.active) { "재생 중인 원고가 없습니다" }
+        val text = checkNotNull(state.activeText) { "재생 중인 원고의 내용을 찾지 못했습니다" }
+        val freshOffset = readScrollOffset(id)
+        val lastPosition = scrollPosition.get()?.takeIf { it.id == id } ?: error("재생 중인 원고가 바뀌었습니다")
+        // Without a readback the last known position goes stale while the script auto-scrolls: refuse instead of jumping back.
+        check(freshOffset != null || lastPosition.paused && state.paused ||
+            android.os.SystemClock.elapsedRealtime() - lastPosition.at < 5_000) { "안경의 현재 원고 위치를 알 수 없어 스크롤하지 않았습니다. 휴대폰의 일시정지 버튼으로 멈춘 뒤 다시 누르세요" }
+        val pageOffset = freshOffset ?: lastPosition.offset
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        check(pageOffset in 0..bytes.size) { "안경에서 현재 원고 위치를 읽지 못했습니다" }
+        // Protocol offsets are UTF-8 bytes. Snap the position to a character before measuring a line.
+        var startByte = pageOffset
+        while (startByte in 1 until bytes.size && (bytes[startByte].toInt() and 0xc0) == 0x80) startByte--
+        val start = String(bytes, 0, startByte, Charsets.UTF_8).length
+        if (down && start == text.length) return JSONObject().put("message", "원고 끝입니다")
+        if (!down && start == 0) return JSONObject().put("message", "원고 처음입니다")
+        val paint = android.graphics.Paint().apply { textSize = 22f }
+        val target = if (down) {
+            val fit = paint.breakText(text, start, text.length, true, 492f, null)
+            var end = (start + fit.coerceAtLeast(1)).coerceAtMost(text.length)
+            val newline = text.indexOf('\n', start)
+            if (newline in start until end) end = newline + 1
+            if (end < text.length && text[end].isLowSurrogate()) end++
+            startByte + text.substring(start, end).toByteArray(Charsets.UTF_8).size
+        } else {
+            // At a logical line start, measure backward from before the preceding newline.
+            val end = if (text[start - 1] == '\n') start - 1 else start
+            val lineStart = text.lastIndexOf('\n', end - 1) + 1
+            val fit = paint.breakText(text, lineStart, end, false, 492f, null)
+            var previous = (end - fit.coerceAtLeast(1)).coerceAtLeast(lineStart)
+            if (text[previous].isLowSurrogate()) previous--
+            startByte - text.substring(previous, start).toByteArray(Charsets.UTF_8).size
+        }
+        send(8, JSONObject().put("action", 1).put("did", id)
+            .put("previewSync", true).put("autoSync", false)
+            .put("pageOffset", target).put("highLightOffset", target).put("code", 1))
+        val requested = ScriptPosition(id, target, paused = state.paused)
+        // Keep newer progress reported by the glasses while the request was on the wire.
+        scrollPosition.compareAndSet(lastPosition, requested)
+        val actualOffset = readScrollOffset(id) ?: scrollPosition.get()
+            ?.takeIf { it.id == id && it !== requested && it !== lastPosition }?.offset
+        val moved = actualOffset != null && if (down) actualOffset >= target else actualOffset <= target
+        val message = when {
+            actualOffset == null -> "안경에 $direction 스크롤 요청을 보냈습니다"
+            moved -> "안경 원고를 $direction 이동했습니다"
+            else -> "안경에 이동을 요청했지만 새 위치를 확인하지 못했습니다"
+        }
+        return JSONObject().put("message", message)
+            .put("beforeOffset", pageOffset).put("requestedOffset", target).put("actualOffset", actualOffset ?: -1)
+    }
+
+    private fun readScrollOffset(id: String): Int? {
+        if (!queryScrollPosition) return null
+        // No reply (timeout) is the same as a rejected readback: stop asking for this script.
+        val reply = runCatching { queryPlaybackState() }.getOrNull() ?: run { queryScrollPosition = false; return null }
+        val offset = reply.optInt("pageOffset", -1)
+        val actualId = reply.optString("did")
+        check(actualId.isBlank() || actualId == id) { "안경의 현재 원고가 바뀌었습니다" }
+        if (actualId == id && offset >= 0 && reply.optInt("state") in 1..2) return offset
+        queryScrollPosition = false
+        return null
+    }
+
+    private fun queryPlaybackState(): JSONObject {
+        val query = JSONObject().put("action", 1).put("checksum", "").put("state", JSONObject.NULL)
+            .put("pageOffset", 0).put("highLightOffset", 0)
+        return checkNotNull(requests.request(20, 10, query) { reply, body -> reply == 10 && body.optInt("action") == 2 })
+    }
+
     fun control(action: String, completion: (Result<JSONObject>) -> Unit) = operation({ controlBlocking(action) }, completion)
     private fun controlBlocking(action: String): JSONObject {
         val id = checkNotNull(state.active) { "이 앱이 시작한 프롬프터가 없음" }
         val type = when (action) { "pause" -> 4; "resume" -> 5; "stop" -> 6; else -> error("프롬프터 동작은 다음 중 하나여야 함: pause/resume/stop") }
         messages.clear()
         send(type, JSONObject().put("action", 1).put("did", id).apply { if (type == 4) put("offset", 0).put("code", 1).put("isCompleted", false) })
-        val actual = checkNotNull(requests.request(20, 10, JSONObject().put("action", 1).put("checksum", "").put("state", JSONObject.NULL).put("pageOffset", 0).put("highLightOffset", 0)) { reply, body -> reply == 10 && body.optInt("action") == 2 })
+        val actual = queryPlaybackState()
         check(!actual.has("code") || actual.optInt("code") == 1) { "안경이 프롬프터 상태 조회를 받아들이지 않음" }
         val expected = when (action) { "pause" -> 2; "resume" -> 1; else -> 3 }
         val matched = actual.optInt("state") == expected && (expected == 3 || actual.optString("did") == id)
-        if (matched) state = state.copy(active = if (expected == 3) null else id, paused = expected == 2)
+        if (matched) {
+            if (expected == 3) scrollPosition.set(null)
+            // The pause readback carries where the script stopped: scrolling while paused can start from it.
+            if (expected == 2) actual.optInt("pageOffset", -1).takeIf { it >= 0 }?.let { scrollPosition.set(ScriptPosition(id, it, paused = true)) }
+            state = state.copy(active = if (expected == 3) null else id, paused = expected == 2,
+                activeText = if (expected == 3) null else state.activeText)
+        }
         return JSONObject().put("did", id).put("readBack", matched).put("deviceState", actual)
             .put("message", if (matched) "프롬프터 상태가 재조회로 확인됨" else "프롬프터 제어를 전송했지만 현재 재조회 값이 요청과 다름")
     }
@@ -226,6 +341,6 @@ internal class TeleprompterLibrary(context: Context, private val requests: Glass
         check(!state.busy) { "프롬프터 전송이 끝날 때까지 기다리세요" }; state = state.copy(busy = true, notice = "안경과 원고 동기화 중…"); changed()
         requests.perform(work) { result -> state = state.copy(busy = false, notice = result.fold({ it.optString("message").ifBlank { "기기에서 확인됨" } }, { it.message ?: "프롬프터 실패" })); changed(); completion(result) }
     }
-    fun disconnected() { linked = false; disconnected = true; task = null; glassesRequests.offer(0 to JSONObject()); transfer.offer(WireFields.Value(6)); messages.offer(0 to JSONObject())
-        state = state.copy(active = null, paused = false, notice = "안경 연결이 끊겼습니다. 원고는 휴대폰에 저장되어 있습니다"); changed() }
+    fun disconnected() { scrollPosition.set(null); linked = false; disconnected = true; task = null; glassesRequests.offer(0 to JSONObject()); transfer.offer(WireFields.Value(6)); messages.offer(0 to JSONObject())
+        state = state.copy(active = null, paused = false, activeText = null, notice = "안경 연결이 끊겼습니다. 원고는 휴대폰에 저장되어 있습니다"); changed() }
 }

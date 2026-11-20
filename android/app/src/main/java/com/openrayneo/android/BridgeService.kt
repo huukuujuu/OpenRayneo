@@ -176,18 +176,12 @@ internal class BridgeService : Service() {
                 runCatching { connection.sendNotification(alert.title.ifBlank { alert.appName }, alert.text, alert.packageName, alert.appName) }
                     .onFailure { onLog("휴대폰 알림 전달 실패: ${it.message}") }
         } }
-        anki = AnkiReview(this, main, ::notifyUI, { title, body, refresh ->
-            // A refresh only rewrites a card still on the glasses; one the wearer closed stays closed.
-            val showing = (state.intent as? DisplayIntent.Answer)?.ref?.source == AnswerSource.FLASHCARD
-            val current = state.answer?.takeIf { showing }
-            // Page turns of a long card already rewrite it; refresh only once it rests on its last page, and keep that page.
-            val turning = refresh && current != null && current.page < current.pages.lastIndex
-            if (state.link.phase == LinkPhase.FULL && !state.disconnecting && (!refresh || showing) && !turning) {
-                val content = AnswerContent(AnswerRef(AnswerSource.FLASHCARD, ++nextAnswer), title, body, page = if (refresh) current?.page ?: 0 else 0)
-                dispatch(if (refresh) GlassesEvent.RefreshAnswer(content) else GlassesEvent.RevealAnswer(content))
+        anki = AnkiReview(this, main, ::notifyUI, { title, body ->
+            if (state.link.phase == LinkPhase.FULL && !state.disconnecting) {
+                dispatch(GlassesEvent.RevealAnswer(AnswerContent(AnswerRef(AnswerSource.FLASHCARD, ++nextAnswer), title, body)))
             }
-        }, { if ((state.intent as? DisplayIntent.Answer)?.ref?.source == AnswerSource.FLASHCARD) clearDisplay() })
-        teleprompter = TeleprompterLibrary(this, requests, ::notifyUI)
+        }, { if ((state.intent as? DisplayIntent.Answer)?.ref?.source == AnswerSource.FLASHCARD) dispatch(GlassesEvent.DismissAnswer) })
+        teleprompter = TeleprompterLibrary(this, requests, ::notifyUI, ::onLog)
         agentServer = LocalAgentServer(main, settings, ::notifyUI, {
             JSONObject().put("version", BuildConfig.VERSION_NAME).put("versionCode", BuildConfig.VERSION_CODE).put("commit", BuildConfig.GIT_COMMIT)
                 .put("phoneId", nativeIdentity().getString("phoneId")).put("link", state.link.phase.name).put("display", state.displayDescription).put("conversationRunning", conversations.state.running)
@@ -785,19 +779,32 @@ internal class BridgeService : Service() {
         }
     }
     private var answerPageTask: Runnable? = null
-    private var answerPageRef: AnswerRef? = null
+    private var answerPageKey: Pair<AnswerRef, Int>? = null
+
+    fun turnAnkiPage(offset: Int) {
+        val intent = state.intent as? DisplayIntent.Answer ?: return
+        val shown = state.answer?.takeIf { it.ref == intent.ref && it.ref.source == AnswerSource.FLASHCARD } ?: return
+        if (state.link.phase != LinkPhase.FULL || state.session?.mode != PageMode.FLASHCARD ||
+            state.session?.phase == PagePhase.CLOSING || state.ownership != DisplayOwnership.APP || state.disconnecting) return
+        val page = (shown.page + offset).coerceIn(0, shown.pages.lastIndex)
+        if (page != shown.page) dispatch(GlassesEvent.AnswerPage(shown.ref, page))
+    }
+
     private fun updateAnswerClearTimer() {
-        // Long answers turn their pages first; the clear timer starts on the last page. Pages only turn while visible.
-        val shown = state.answer?.takeIf { (state.intent as? DisplayIntent.Answer)?.ref == it.ref }
+        // Anki pages move only on input. Assistant answers page while visible and clear after the last page.
+        val shown = state.answer?.takeIf {
+            it.ref.source != AnswerSource.FLASHCARD && (state.intent as? DisplayIntent.Answer)?.ref == it.ref
+        }
         val visible = state.session != null && state.ownership == DisplayOwnership.APP && state.link.phase == LinkPhase.FULL
-        if (shown == null || !visible || shown.page >= shown.pages.lastIndex || answerPageRef != shown.ref) {
-            answerPageTask?.let(main::removeCallbacks); answerPageTask = null; answerPageRef = null
+        val key = shown?.let { it.ref to it.page }
+        if (shown == null || !visible || shown.page >= shown.pages.lastIndex || answerPageKey != key) {
+            answerPageTask?.let(main::removeCallbacks); answerPageTask = null; answerPageKey = null
         }
         if (shown != null && visible && shown.page < shown.pages.lastIndex) {
             if (answerPageTask == null && state.session?.let { it.phase == PagePhase.READY && it.writtenContent == it.content } == true) {
                 val ref = shown.ref; val next = shown.page + 1
-                answerPageRef = ref
-                answerPageTask = Runnable { answerPageTask = null; answerPageRef = null; dispatch(GlassesEvent.AnswerPage(ref, next)) }
+                answerPageKey = key
+                answerPageTask = Runnable { answerPageTask = null; answerPageKey = null; dispatch(GlassesEvent.AnswerPage(ref, next)) }
                     .also { main.postDelayed(it, ANSWER_PAGE_MS) }
             }
             return

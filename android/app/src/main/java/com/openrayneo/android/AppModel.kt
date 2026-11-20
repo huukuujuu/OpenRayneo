@@ -58,6 +58,15 @@ internal class AppModel(application: Application) : AndroidViewModel(application
     private val context = application
     private val preferences = context.getSharedPreferences("companion_ui", Context.MODE_PRIVATE)
     private val settings = AppSettings(context)
+    var remoteBindings by mutableStateOf(RemoteAction.entries.mapNotNull { action ->
+        RemoteKey.decode(preferences.getString("remoteKey.${action.name}", null))?.let { action to it }
+    }.toMap())
+        private set
+
+    fun bindRemoteKey(action: RemoteAction, key: RemoteKey?) {
+        preferences.edit().putString("remoteKey.${action.name}", key?.encode()).apply()
+        remoteBindings = if (key == null) remoteBindings - action else remoteBindings + (action to key)
+    }
     @SuppressLint(
         "StaticFieldLeak"
     ) // Application-bound service; the binding and observer are released in onCleared.

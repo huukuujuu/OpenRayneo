@@ -15,7 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-/** Review AnkiDroid decks: the card shows here and on the glasses' answer page; ratings go back to AnkiDroid. */
+/** Review AnkiDroid decks on the phone and glasses. Ratings go back to AnkiDroid. */
 @Composable
 internal fun AnkiScreen(model: AppModel, actions: UiActions) {
     val context = LocalContext.current
@@ -24,7 +24,25 @@ internal fun AnkiScreen(model: AppModel, actions: UiActions) {
     LaunchedEffect(model.ankiAllowed) {
         if (installed && model.ankiAllowed && anki.decks.isEmpty() && anki.card == null) model.attempt { model.service().anki.loadDecks() }
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    val remote = Modifier.remoteShortcuts(
+        installed && model.ankiAllowed && anki.card != null, ankiRemoteActions, model.remoteBindings,
+    ) { action ->
+        model.attempt {
+            val service = model.service()
+            val review = service.anki
+            val current = review.state
+            val card = current.card
+            if (!current.busy && card != null) {
+                when (action) {
+                    RemoteAction.ANKI_FLIP -> review.flip()
+                    RemoteAction.ANKI_PREVIOUS -> service.turnAnkiPage(-1)
+                    RemoteAction.ANKI_NEXT -> service.turnAnkiPage(1)
+                    else -> if (current.flipped) action.defaults.first().ankiEase(card.buttons)?.let(review::grade) else Unit
+                }
+            }
+        }
+    }
+    Column(remote.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         if (!installed) {
             Note("AnkiDroid 앱의 덱을 복습합니다. 먼저 휴대폰에 AnkiDroid를 설치하고 덱을 만들거나 가져오세요.")
             ToolButton(onClick = { model.attempt { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${AnkiDroid.PACKAGE}"))) } }) {
@@ -52,6 +70,30 @@ internal fun AnkiScreen(model: AppModel, actions: UiActions) {
                     Text(card.answer, Modifier.fillMaxWidth(), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
                 }
             }
+            val glasses = model.state.glasses
+            val page = glasses.answer?.takeIf {
+                it.ref.source == AnswerSource.FLASHCARD &&
+                    (glasses.intent as? DisplayIntent.Answer)?.ref == it.ref &&
+                    glasses.link.phase == LinkPhase.FULL && glasses.session?.mode == PageMode.FLASHCARD &&
+                    glasses.session?.phase != PagePhase.CLOSING && !glasses.disconnecting
+            }
+            if (page != null) {
+                val pageCount = page.pages.size
+                if (pageCount > 1) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = { model.attempt { model.service().turnAnkiPage(-1) } },
+                            enabled = !anki.busy && page.page > 0,
+                        ) { Text("이전 쪽") }
+                        Text("안경 ${page.page + 1}/$pageCount")
+                        TextButton(
+                            onClick = { model.attempt { model.service().turnAnkiPage(1) } },
+                            enabled = !anki.busy && page.page < pageCount - 1,
+                        ) { Text("다음 쪽") }
+                    }
+                }
+            }
             if (!anki.flipped) ToolButton(onClick = { model.attempt { model.service().anki.flip() } }, Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
                 Text("뒷면 보기")
             } else {
@@ -72,9 +114,10 @@ internal fun AnkiScreen(model: AppModel, actions: UiActions) {
                 }
             }
             TextButton(onClick = { model.attempt { model.service().anki.stop() } }) { Text("복습 끝내기") }
-            Note(if (model.state.glasses.link.phase == LinkPhase.FULL) "카드가 안경 답변 화면에도 표시됩니다. 긴 카드는 몇 초마다 다음 쪽으로 넘어갑니다."
-                else "안경이 연결되어 있으면 카드가 안경 답변 화면에도 표시됩니다.")
-            Note("안경 다이얼로 넘기기는 아직 확인하지 않았습니다. 복습 중 안경 다이얼을 눌러 보시면 안경이 보내는 신호가 앱 로그에 남아, 그걸 보고 연결할 수 있는지 판단합니다.")
+            Note("리모컨 키 · " + ankiRemoteActions.joinToString(" · ") { "${remoteKeyLabel(it, model.remoteBindings)} ${it.label}" } + ". 설정의 리모컨 입력에서 변경할 수 있습니다.")
+            if (model.state.glasses.link.phase == LinkPhase.FULL) {
+                TextButton(onClick = { model.attempt { model.service().revealAnswer(AnswerSource.FLASHCARD) } }) { Text("현재 카드를 안경에 표시") }
+            }
         } else {
             if (deck != null) ToolOutlinedButton(onClick = { model.attempt { model.service().anki.stop() } }) { Text("덱 목록으로") }
             SectionLabel("덱")

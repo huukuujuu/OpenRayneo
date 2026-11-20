@@ -288,6 +288,7 @@ internal fun SettingsScreen(
         SettingsRow("목소리 및 인물", "내 목소리 등록, 이름 붙이기", Icons.Outlined.People) { open("voice-profiles") }
         SectionLabel("안경과 휴대폰")
         SettingsRow("안경 설정", "밝기, 화면 위치 및 깨우기", Icons.Outlined.Settings) { open("device-settings") }
+        SettingsRow("리모컨 입력", "Anki·프롬프터 키 변경 및 입력 확인", Icons.Outlined.Bluetooth) { open("remote-input") }
         SettingsRow("홈 화면 및 콘텐츠", "위젯, 할 일, 일정 및 날씨", Icons.Outlined.Dashboard) { open("content") }
         SettingsRow("프롬프터 원고함", "로컬 원고, 안경 재생 및 제어", Icons.Outlined.Description) { open("teleprompter") }
         SettingsRow(

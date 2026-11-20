@@ -13,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.KeyboardType
@@ -86,6 +87,10 @@ internal fun TeleprompterScreen(model: AppModel) {
     var savedText by rememberSaveable { mutableStateOf("") }
     var speed by rememberSaveable { mutableIntStateOf(2) }
     var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var remoteEnabled by remember { mutableStateOf(false) }
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    var titleFocused by remember { mutableStateOf(false) }
+    var textFocused by remember { mutableStateOf(false) }
     val context = LocalContext.current
     // Plain text files (.txt, .md, ...) become scripts named after the file.
     val importFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -116,22 +121,56 @@ internal fun TeleprompterScreen(model: AppModel) {
             confirmButton = { TextButton(onClick = { pending = null; discard() }) { Text("버리기") } },
             dismissButton = { TextButton(onClick = { pending = null }) { Text("계속 편집") } })
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    fun control(action: String? = null) = model.attempt {
+        val library = model.service().teleprompter
+        val current = library.state
+        if (current.active != null && !current.busy) {
+            library.control(action ?: if (current.paused) "resume" else "pause") {}
+        }
+    }
+    LaunchedEffect(state.active) { remoteEnabled = false }
+    fun scroll(down: Boolean, fromRemote: Boolean = false) = model.attempt {
+        val library = model.service().teleprompter
+        if (library.state.active != null && !library.state.busy) library.scroll(down, fromRemote)
+    }
+    val remote = Modifier.remoteShortcuts(
+        remoteEnabled && state.active != null && pending == null && !titleFocused && !textFocused, prompterRemoteActions, model.remoteBindings,
+    ) { action ->
+        when (action) {
+            RemoteAction.PROMPT_TOGGLE -> control()
+            RemoteAction.PROMPT_STOP -> control("stop")
+            RemoteAction.PROMPT_UP -> scroll(down = false, fromRemote = true)
+            RemoteAction.PROMPT_DOWN -> scroll(down = true, fromRemote = true)
+            else -> Unit
+        }
+    }
+    Column(remote.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("프롬프터 원고함", style = MaterialTheme.typography.headlineSmall)
         Note("원고는 휴대폰에 저장되며 공식 클라우드를 사용하지 않습니다. 전송 시 현재 표시와 음성 수신을 중지한 뒤 안경으로 전송합니다.")
         Note(state.notice)
-        ToolOutlinedButton(onClick = { importFiles.launch(arrayOf("text/*")) }, enabled = !state.busy) { Text("텍스트 파일 가져오기") }
+        ToolOutlinedButton(onClick = {
+            remoteEnabled = false
+            importFiles.launch(arrayOf("text/*"))
+        }, enabled = !state.busy) { Text("텍스트 파일 가져오기") }
         Note("휴대폰에 저장된 원고는 안경과 연결되면 안경의 프롬프터 목록에도 보내져, 안경 메뉴에서 바로 고를 수 있습니다.")
         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if (state.active != null) Row {
-            TextButton(onClick = { model.attempt { model.service().teleprompter.control(if (state.paused) "resume" else "pause") {} } }, enabled = !state.busy) { Text(if (state.paused) "계속" else "일시정지") }
-            TextButton(onClick = { model.attempt { model.service().teleprompter.control("stop") {} } }, enabled = !state.busy) { Text("프롬프터 중지") }
+        if (state.active != null) {
+            Row {
+                TextButton(onClick = { control() }, enabled = !state.busy) { Text(if (state.paused) "계속" else "일시정지") }
+                TextButton(onClick = { control("stop") }, enabled = !state.busy) { Text("프롬프터 중지") }
+            }
+            ToolOutlinedButton(onClick = { if (!remoteEnabled) focusManager.clearFocus(); remoteEnabled = !remoteEnabled }) { Text(if (remoteEnabled) "리모컨 끄기" else "리모컨 켜기") }
+            Row {
+                TextButton(onClick = { scroll(down = false) }, enabled = !state.busy) { Text("위로 스크롤") }
+                TextButton(onClick = { scroll(down = true) }, enabled = !state.busy) { Text("아래로 스크롤") }
+            }
+            if (remoteEnabled) Note("리모컨 키 · " + prompterRemoteActions.joinToString(" · ") { "${remoteKeyLabel(it, model.remoteBindings)} ${it.label}" } + ". 원고 칸에 입력하는 동안에는 리모컨 키를 받지 않습니다. 설정의 리모컨 입력에서 변경할 수 있습니다.")
         }
         state.documents.forEach { document ->
             TextButton(onClick = { switchTo(document.getString("did"), document.getString("title"), document.getString("text")) }) { Text(document.getString("title")) }
         }
-        OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), label = { Text("원고 제목") })
-        OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), label = { Text("본문") }, minLines = 6, maxLines = 16)
+        OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth().onFocusChanged { titleFocused = it.isFocused }, label = { Text("원고 제목") })
+        OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().onFocusChanged { textFocused = it.isFocused }, label = { Text("본문") }, minLines = 6, maxLines = 16)
         Text("스크롤 속도 $speed")
         Slider(speed.toFloat(), { speed = it.toInt() }, valueRange = 1f..10f, steps = 8)
         ToolOutlinedButton(onClick = { model.attempt { selected = model.service().teleprompter.save(title.trim(), text, selected ?: java.util.UUID.randomUUID().toString()); savedTitle = title; savedText = text; model.notice = "원고가 휴대폰에 저장됨" } }, enabled = title.isNotBlank() && text.isNotBlank() && !state.busy) { Text("원고 저장") }

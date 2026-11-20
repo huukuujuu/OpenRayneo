@@ -70,6 +70,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                                 "voice-settings" -> "음성 설정"
                                 "voice-profiles" -> "목소리 및 인물"
                                 "device-settings" -> "안경 설정"
+                                "remote-input" -> "리모컨 입력"
                                 "content" -> "안경 홈 화면과 일정"
                                 "anki" -> "Anki 복습"
                                 "alerts" -> "휴대폰 알림"
@@ -156,6 +157,7 @@ internal fun CompanionApp(model: AppModel, actions: UiActions) {
                 "voice-settings" -> VoiceSettingsScreen(model, actions)
                 "voice-profiles" -> VoiceProfilesScreen(model)
                 "device-settings" -> GlassesSettingsScreen(model)
+                "remote-input" -> RemoteInputScreen(model)
                 "content" -> CompanionContentScreen(model)
                 "anki" -> AnkiScreen(model, actions)
                 "alerts" -> PhoneAlertsScreen(model, actions)

@@ -105,7 +105,7 @@ internal object GlassesCoordinator {
                 setIntent(DisplayIntent.BlankPrompt)
             }
             GlassesEvent.RetryAudio -> state.session?.takeIf {
-                state.link.phase == LinkPhase.FULL && state.ownership == DisplayOwnership.APP &&
+                it.mode != PageMode.FLASHCARD && state.link.phase == LinkPhase.FULL && state.ownership == DisplayOwnership.APP &&
                     !state.disconnecting && it.phase in setOf(PagePhase.LAYOUT, PagePhase.SETTLING, PagePhase.READY)
             }?.let {
                 state = state.copy(audio = AudioState(AudioPhase.WAITING_PACKET, "디코더 재시작됨, 새 안경 오디오 패킷 대기"))
@@ -127,10 +127,6 @@ internal object GlassesCoordinator {
                     state.ownership == DisplayOwnership.APP && !state.disconnecting) showAnswer(event.content)
             }
             is GlassesEvent.RevealAnswer -> if (!state.disconnecting) showAnswer(event.content)
-            is GlassesEvent.RefreshAnswer -> (state.intent as? DisplayIntent.Answer)?.takeIf { !state.disconnecting }?.let { intent ->
-                // No setIntent: a pending answer's permit, the revision and any restore stay as they are; the new ref still rewrites the page.
-                state = state.copy(intent = intent.copy(ref = event.content.ref), answer = event.content)
-            }
             is GlassesEvent.AnswerPage -> state.answer?.takeIf { it.ref == event.ref && (state.intent as? DisplayIntent.Answer)?.ref == event.ref }?.let {
                 state = state.copy(answer = it.copy(page = event.page.coerceIn(0, it.pages.lastIndex)))
             }
@@ -160,7 +156,7 @@ internal object GlassesCoordinator {
                             state = state.copy(session = session.copy(writtenContent = signal.content,
                                 phase = if (latest) PagePhase.READY else session.phase))
                             val answer = state.intent as? DisplayIntent.Answer
-                            if (latest && answer?.returnTo == ReturnTarget.NAVIGATION && state.navigation.enabled && state.restoreRevision != state.revision) {
+                            if (latest && session.mode != PageMode.FLASHCARD && answer?.returnTo == ReturnTarget.NAVIGATION && state.navigation.enabled && state.restoreRevision != state.revision) {
                                 cancelRestore()
                                 state = state.copy(restoreRevision = state.revision)
                                 effects += GlassesEffect.ScheduleRestore(session.id, state.revision, answer.ref)
@@ -251,9 +247,12 @@ internal object GlassesCoordinator {
                 PageMode.NAVIGATION to PageContent("navigation", it)
             }
             is DisplayIntent.Answer -> state.answer?.takeIf { it.ref == intent.ref }?.let {
+                val page = it.pages.getOrElse(it.page) { _ -> it.text }
+                if (it.ref.source == AnswerSource.FLASHCARD)
+                    return PageMode.FLASHCARD to PageContent("anki:${it.ref.taskId}", it.question, page)
                 // The question line shares the window: keep it short so the answer page fits.
                 PageMode.PROMPT to PageContent("${it.ref.source}:${it.ref.taskId}", it.question.ifBlank { "Agent" }.trim().let { q -> if (q.length <= 30) q else q.take(29) + "…" },
-                    it.pages.getOrElse(it.page) { _ -> it.text })
+                    page)
             }
         }
     }

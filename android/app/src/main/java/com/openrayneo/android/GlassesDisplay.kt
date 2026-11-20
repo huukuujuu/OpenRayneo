@@ -36,6 +36,7 @@ internal class GlassesDisplay(
     private val recentAudioSequences = ArrayDeque<Long>()
     // CAPTION: one screen that is replaced, never appended; only the newest screen matters.
     private var lastScreen = ""
+    private var flashcardRedraw: Runnable? = null
     private var audioReported = false
     private var unmatchedAudioReported = false
     /** Non-audio frames the glasses send inside our session (e.g. Live answers), logged until the flow is mapped. */
@@ -52,7 +53,7 @@ internal class GlassesDisplay(
         val id = UUID.randomUUID().toString().replace("-", "")
         sid = id; pending = next.content
         val body = JSONObject().put("sid", id).put("trigger", 1).put("force", false).put("code", 0)
-            .put("settings", JSONObject().put("mode", if (next.mode == PageMode.NAVIGATION) "translation" else "conversation")
+            .put("settings", JSONObject().put("mode", if (next.mode == PageMode.NAVIGATION || next.mode == PageMode.FLASHCARD) "translation" else "conversation")
                 .put("source_language", "zh-CN").put("target_language", "zh-CN")
                 .put("save_audio", false).put("direction", "ahead"))
         schedule(timeout, 8_000)
@@ -133,6 +134,7 @@ internal class GlassesDisplay(
             return
         }
         if (audioAccepted && message.type == 4) {
+            if (active.mode == PageMode.FLASHCARD) return
             message.audio?.takeIf { it.isNotEmpty() }?.let { packet ->
                 val number = json.optLong("seq", -1)
                 if (number >= 0) {
@@ -166,7 +168,7 @@ internal class GlassesDisplay(
             cancel(timeout)
             if (json.optInt("code") != 1) { fail("안경이 세션 시작을 거부함: ${json.optInt("code")}"); return }
             audioAccepted = true
-            signal(active.id, PageSignal.AudioAccepted(active.mode.channels))
+            if (active.mode != PageMode.FLASHCARD) signal(active.id, PageSignal.AudioAccepted(active.mode.channels))
             if (generation != receivingGeneration) return
             if (active.mode == PageMode.NAVIGATION) {
                 signal(active.id, PageSignal.LayoutPending)
@@ -201,7 +203,7 @@ internal class GlassesDisplay(
         val content = pending ?: return
         val id = sid ?: return
         val active = session ?: return
-        if (active.mode == PageMode.CAPTION) { flushCaption(active, id, content); return }
+        if (active.mode == PageMode.CAPTION || active.mode == PageMode.FLASHCARD) { flushCaption(active, id, content); return }
         pending = null
         if (content == lastWritten) return
         writing = true
@@ -228,16 +230,33 @@ internal class GlassesDisplay(
      */
     private fun flushCaption(active: PageSession, id: String, content: PageContent) {
         pending = null
-        val screen = captionScreen(content.text, content.answer.orEmpty())
+        val screen = if (active.mode == PageMode.FLASHCARD)
+            content.text + "\n" + content.answer.orEmpty().lineSequence().joinToString(" ") { it.trim() }
+        else captionScreen(content.text, content.answer.orEmpty())
         if (screen.isBlank() || screen == lastScreen) { lastWritten = content; signal(active.id, PageSignal.Written(content)); return }
         lastScreen = screen
+        // Only a different screen replaces the pending first-screen repeat; an identical update keeps it.
+        flashcardRedraw?.let(cancel); flashcardRedraw = null
         writing = true
-        send(0x13, 5, JSONObject().put("sid", id).put("mode", 3).put("status", 0)
-            .put("content", JSONObject().put("source_transcript", screen).put("keyword_info", "").put("label", 0))) { result ->
+        val firstFlashcard = active.mode == PageMode.FLASHCARD && lastWritten == null
+        val payload = JSONObject().put("sid", id).put("mode", 3).put("status", 0)
+            .put("content", JSONObject().put("source_transcript", screen).put("keyword_info", "").put("label", 0))
+        send(0x13, 5, payload) { result ->
             if (sid != id) return@send
             writing = false
             if (result.isFailure) { fail("자막 전송 실패: ${result.exceptionOrNull()?.message}"); return@send }
-            lastWritten = content; signal(active.id, PageSignal.Written(content))
+            lastWritten = content
+            if (firstFlashcard && pending == null) {
+                // A successful transport write can precede the glasses' first render.
+                // Repeat the initial partial once after startup; a different screen cancels it.
+                flashcardRedraw = Runnable {
+                    flashcardRedraw = null
+                    if (sid == id && !failed) send(0x13, 5, payload) { redraw ->
+                        if (sid == id && redraw.isFailure) report("Anki 첫 화면 재전송 실패: ${redraw.exceptionOrNull()?.message}")
+                    }
+                }.also { schedule(it, 750) }
+            }
+            signal(active.id, PageSignal.Written(content))
             flush()
         }
     }
@@ -261,6 +280,8 @@ internal class GlassesDisplay(
     fun reset() {
         generation++
         cancel(timeout); cancel(settle); sessionSignals = 0
+        flashcardRedraw?.let(cancel)
+        flashcardRedraw = null
         sid?.let { closedSids.addLast(it); while (closedSids.size > 8) closedSids.pollFirst() }
         session = null; sid = null; audioAccepted = false; accepted = false; settled = false; writing = false; failed = false
         navigationFrameSent = false; pending = null; lastWritten = null; lastScreen = ""

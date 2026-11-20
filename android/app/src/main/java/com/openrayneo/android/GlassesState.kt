@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.openrayneo.android
 
-internal enum class AnswerSource { MOBILE_AGENT, COMPUTER_CODEX, /** Anki cards shown on the answer page. */ FLASHCARD }
+internal enum class AnswerSource { MOBILE_AGENT, COMPUTER_CODEX, FLASHCARD }
 internal data class AnswerRef(val source: AnswerSource, val taskId: Long)
 internal data class AnswerContent(val ref: AnswerRef, val question: String, val text: String, val page: Int = 0) {
     /** The glasses' answer window cuts text after roughly 120 characters: long answers are shown page by page. */
@@ -65,8 +65,8 @@ internal sealed interface DisplayIntent {
 internal enum class DisplayOwnership { APP, YIELDED }
 internal enum class LinkPhase { DISCONNECTED, SCANNING, CONNECTING, BLE_ONLY, FULL, RETRY_WAIT, CLOSING }
 internal data class LinkState(val phase: LinkPhase = LinkPhase.DISCONNECTED, val detail: String = "안경 연결 대기 중")
-/** NAVIGATION and CAPTION use the caption business 0x13 (text mode 3), PROMPT the prompt business 0x17 (text mode 4). */
-internal enum class PageMode { NAVIGATION, PROMPT, CAPTION }
+/** PROMPT uses 0x17. The remaining modes use 0x13, with FLASHCARD displaying text without decoding audio. */
+internal enum class PageMode { NAVIGATION, PROMPT, CAPTION, FLASHCARD }
 internal val PageMode.protocol: Int get() = if (this == PageMode.PROMPT) 0x17 else 0x13
 internal val PageMode.channels: Int get() = if (this == PageMode.PROMPT) 2 else 1
 /** A session the glasses opened themselves (their menu sent type 1 with their own sid); the phone answers it with type 2. */
@@ -126,6 +126,7 @@ internal data class GlassesState(
         session.writtenContent != session.content -> "안경 내용 업데이트 중"
         session.mode == PageMode.NAVIGATION -> "내비게이션 세션 준비됨"
         session.mode == PageMode.CAPTION -> "안경 실시간 자막 세션 준비됨"
+        session.mode == PageMode.FLASHCARD -> "안경 Anki 카드 준비됨"
         intent == DisplayIntent.BlankPrompt -> "화면을 지웠고 음성 수신은 유지됨"
         intent is DisplayIntent.Answer -> "답변 세션 준비됨"
         intent == DisplayIntent.Translation -> if (captions) "실시간 자막 세션 준비됨" else "실시간 번역 세션 준비됨"
@@ -168,8 +169,7 @@ internal sealed interface GlassesEvent {
     data class CancelAnswer(val source: AnswerSource) : GlassesEvent
     data class AnswerCompleted(val content: AnswerContent, val permit: AnswerPermit) : GlassesEvent
     data class RevealAnswer(val content: AnswerContent) : GlassesEvent
-    /** Rewrites the answer already on screen (same intent, permit and revision), e.g. to keep a card from fading. */
-    data class RefreshAnswer(val content: AnswerContent) : GlassesEvent
+    /** Moves to another page of the same answer. */
     data class AnswerPage(val ref: AnswerRef, val page: Int) : GlassesEvent
     data class SessionSignal(val id: Long, val signal: PageSignal) : GlassesEvent
     data class AudioChanged(val id: Long, val state: AudioState) : GlassesEvent
