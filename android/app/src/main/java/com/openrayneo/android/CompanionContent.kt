@@ -24,6 +24,8 @@ internal data class CompanionContentState(val dashboard: JSONObject? = null, val
 internal class CompanionContent(private val context: Context, private val requests: GlassesRequests,
     private val address: () -> String?, private val changed: () -> Unit) {
     @Volatile var state = CompanionContentState(); private set
+    /** App log (any thread): calendar and to-do sync outcomes with the glasses. */
+    @Volatile var log: (String) -> Unit = {}
     private val stateLock = Any()
     /** Both the main and the glasses thread write the state: copy-and-replace under one lock so no update is lost. */
     private fun update(change: (CompanionContentState) -> CompanionContentState) { synchronized(stateLock) { state = change(state) } }
@@ -177,6 +179,8 @@ internal class CompanionContent(private val context: Context, private val reques
         execute({ todoSyncQueued.set(false); syncTodos() }) { result ->
             // A disconnect cancels the queued sync; that is not a failure worth showing.
             result.exceptionOrNull()?.takeIf { address() != null }?.let { error -> update { it.copy(todoNotice = "안경과 할 일 맞추기 실패: ${error.message}") }; changed() }
+            log(result.fold({ "${state.todoNotice.ifBlank { "안경 할 일 맞추기 끝" }} (휴대폰 할 일 ${it.optJSONArray("items")?.length() ?: 0}개)" },
+                { "안경 할 일 맞추기 실패 또는 취소: ${it.message}" }))
         }
     }
     /**
@@ -288,7 +292,9 @@ internal class CompanionContent(private val context: Context, private val reques
         execute({ syncCalendar() }) { result ->
             calendarSyncQueued = false; calendarSyncedAt = System.currentTimeMillis(); calendarDay = day
             if (result.isFailure) calendarChanged = true
-            update { it.copy(calendarNotice = result.fold({ it.optString("message") }, { "안경 일정 보내기 실패: ${it.message}" })) }; changed()
+            val notice = result.fold({ it.optString("message") }, { "안경 일정 보내기 실패: ${it.message}" })
+            log(notice + result.getOrNull()?.let { " (보낸 캘린더 일정 ${it.optInt("count")}개, 안경 일정 ${it.optJSONArray("items")?.length() ?: 0}개, 읽어서 확인 ${it.optBoolean("readBack")})" }.orEmpty())
+            update { it.copy(calendarNotice = notice) }; changed()
         }
     }
     /** Glasses thread. Replaces the calendar items sent before and keeps schedules made elsewhere (assistant, glasses). */

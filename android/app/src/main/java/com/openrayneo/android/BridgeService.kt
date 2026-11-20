@@ -156,9 +156,17 @@ internal class BridgeService : Service() {
         deviceSettings = GlassesDeviceSettings(requests, ::notifyUI)
         content = CompanionContent(this, requests, { connection.resolvedClassicAddress?.takeIf { state.link.phase == LinkPhase.FULL } }, ::notifyUI)
         // Cards use the answer page; without the glasses the review runs on the phone screen only.
-        anki = AnkiReview(this, main, ::notifyUI, { title, body ->
-            if (state.link.phase == LinkPhase.FULL && !state.disconnecting)
-                dispatch(GlassesEvent.RevealAnswer(AnswerContent(AnswerRef(AnswerSource.FLASHCARD, ++nextAnswer), title, body)))
+        content.log = { text -> main.post { onLog(text) } }
+        anki = AnkiReview(this, main, ::notifyUI, { title, body, refresh ->
+            // A refresh only rewrites a card still on the glasses; one the wearer closed stays closed.
+            val showing = (state.intent as? DisplayIntent.Answer)?.ref?.source == AnswerSource.FLASHCARD
+            val current = state.answer?.takeIf { showing }
+            // Page turns of a long card already rewrite it; refresh only once it rests on its last page, and keep that page.
+            val turning = refresh && current != null && current.page < current.pages.lastIndex
+            if (state.link.phase == LinkPhase.FULL && !state.disconnecting && (!refresh || showing) && !turning) {
+                val content = AnswerContent(AnswerRef(AnswerSource.FLASHCARD, ++nextAnswer), title, body, page = if (refresh) current?.page ?: 0 else 0)
+                dispatch(if (refresh) GlassesEvent.RefreshAnswer(content) else GlassesEvent.RevealAnswer(content))
+            }
         }, { if ((state.intent as? DisplayIntent.Answer)?.ref?.source == AnswerSource.FLASHCARD) clearDisplay() })
         teleprompter = TeleprompterLibrary(this, requests, ::notifyUI)
         agentServer = LocalAgentServer(main, settings, ::notifyUI, {
@@ -773,7 +781,7 @@ internal class BridgeService : Service() {
         val (question, answer) = when (source) {
             AnswerSource.MOBILE_AGENT -> agent.question to agent.answer
             AnswerSource.COMPUTER_CODEX -> codex.question to codex.answer
-            AnswerSource.FLASHCARD -> anki.state.card?.let { card -> if (anki.state.flipped) card.question to card.answer else "Anki" to card.question } ?: ("" to "")
+            AnswerSource.FLASHCARD -> anki.shownCard ?: ("" to "")
         }
         require(answer.isNotBlank()) { "표시할 답변이 아직 없습니다" }
         dispatch(GlassesEvent.RevealAnswer(AnswerContent(AnswerRef(source, ++nextAnswer), question, answer)))

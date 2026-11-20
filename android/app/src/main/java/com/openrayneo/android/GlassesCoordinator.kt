@@ -127,6 +127,10 @@ internal object GlassesCoordinator {
                     state.ownership == DisplayOwnership.APP && !state.disconnecting) showAnswer(event.content)
             }
             is GlassesEvent.RevealAnswer -> if (!state.disconnecting) showAnswer(event.content)
+            is GlassesEvent.RefreshAnswer -> (state.intent as? DisplayIntent.Answer)?.takeIf { !state.disconnecting }?.let { intent ->
+                // No setIntent: a pending answer's permit, the revision and any restore stay as they are; the new ref still rewrites the page.
+                state = state.copy(intent = intent.copy(ref = event.content.ref), answer = event.content)
+            }
             is GlassesEvent.AnswerPage -> state.answer?.takeIf { it.ref == event.ref && (state.intent as? DisplayIntent.Answer)?.ref == event.ref }?.let {
                 state = state.copy(answer = it.copy(page = event.page.coerceIn(0, it.pages.lastIndex)))
             }

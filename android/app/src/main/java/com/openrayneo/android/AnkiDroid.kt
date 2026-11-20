@@ -83,10 +83,22 @@ internal data class AnkiState(val decks: List<AnkiDroid.Deck> = emptyList(), val
 
 /** A review session: the card goes to the glasses' answer page and the phone screen; ratings go back to AnkiDroid. Main thread. */
 internal class AnkiReview(private val context: Context, private val main: Handler, private val changed: () -> Unit,
-    private val show: (String, String) -> Unit, private val clear: () -> Unit) {
+    private val show: (String, String, Boolean) -> Unit, private val clear: () -> Unit) {
     var state = AnkiState(); private set
     private val io = Executors.newSingleThreadExecutor()
     private var shownAt = 0L
+    /** What the glasses show now; rewritten every few seconds because the glasses hide an unchanged answer page after about 8 s. */
+    private var shown: Pair<String, String>? = null
+    private val keepAlive = object : Runnable {
+        override fun run() { shown?.let { (title, body) -> show(title, body, true); main.postDelayed(this, KEEP_ALIVE_MS) } }
+    }
+    private fun display(title: String, body: String) {
+        shown = title to body; show(title, body, false)
+        main.removeCallbacks(keepAlive); main.postDelayed(keepAlive, KEEP_ALIVE_MS)
+    }
+    private fun hide() { shown = null; main.removeCallbacks(keepAlive); clear() }
+    /** Title and body of the card on the glasses, for "show again". */
+    val shownCard get() = shown
     /** Bumped by [stop]: results of work started before it are dropped. */
     private var session = 0
     private fun work(block: () -> Unit) {
@@ -102,7 +114,8 @@ internal class AnkiReview(private val context: Context, private val main: Handle
     fun flip() {
         val card = state.card ?: return
         if (state.flipped) return
-        state = state.copy(flipped = true); show(card.question, card.answer); changed()
+        // The front stays on screen above the answer, as on a paper card.
+        state = state.copy(flipped = true); display("Anki · ${state.deck?.name.orEmpty()}", card.question + "\n----\n" + card.answer); changed()
     }
     fun grade(ease: Int) {
         val card = state.card ?: return; val deck = state.deck ?: return
@@ -116,7 +129,7 @@ internal class AnkiReview(private val context: Context, private val main: Handle
     }
     fun stop() {
         session++
-        if (state.card != null) clear()
+        if (state.card != null) hide()
         // Work still running for the old session finishes in the background; its result is dropped.
         state = state.copy(deck = null, card = null, flipped = false, reviewed = 0, busy = false); changed()
         loadDecks()
@@ -125,8 +138,9 @@ internal class AnkiReview(private val context: Context, private val main: Handle
         shownAt = System.currentTimeMillis()
         state = state.copy(deck = deck, card = card, flipped = false, busy = false,
             notice = if (card == null) "이 덱에서 지금 복습할 카드가 없습니다" + if (state.reviewed > 0) " (${state.reviewed}장 복습함)" else "" else "")
-        if (card != null) show("Anki · ${deck.name}", card.question) else clear()
+        if (card != null) display("Anki · ${deck.name}", card.question) else hide()
         changed()
     }
-    fun close() { io.shutdownNow() }
+    fun close() { main.removeCallbacks(keepAlive); io.shutdownNow() }
+    private companion object { const val KEEP_ALIVE_MS = 5_000L }
 }

@@ -168,6 +168,8 @@ internal sealed interface GlassesEvent {
     data class CancelAnswer(val source: AnswerSource) : GlassesEvent
     data class AnswerCompleted(val content: AnswerContent, val permit: AnswerPermit) : GlassesEvent
     data class RevealAnswer(val content: AnswerContent) : GlassesEvent
+    /** Rewrites the answer already on screen (same intent, permit and revision), e.g. to keep a card from fading. */
+    data class RefreshAnswer(val content: AnswerContent) : GlassesEvent
     data class AnswerPage(val ref: AnswerRef, val page: Int) : GlassesEvent
     data class SessionSignal(val id: Long, val signal: PageSignal) : GlassesEvent
     data class AudioChanged(val id: Long, val state: AudioState) : GlassesEvent
