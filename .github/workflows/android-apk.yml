@@ -47,9 +47,12 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # Every build gets the next minor version (run 26 -> 1.3.0), used by Gradle and the uploaded file name.
+      # Every build gets the next minor version, used by Gradle and the uploaded file name. Offset by 10 from 2026-11-22
+      # (run 87 -> 1.74.0, code 1097): phone-built previews had reached 1.72.0/1095, and Android refuses a lower code.
       - name: Set version
-        run: echo "OPENRAYNEO_VERSION_NAME=1.$((GITHUB_RUN_NUMBER - 23)).0" >> "$GITHUB_ENV"
+        run: |
+          echo "OPENRAYNEO_VERSION_NAME=1.$((GITHUB_RUN_NUMBER - 13)).0" >> "$GITHUB_ENV"
+          echo "OPENRAYNEO_VERSION_CODE=$((GITHUB_RUN_NUMBER + 1010))" >> "$GITHUB_ENV"
 
       - name: Build release APK
         working-directory: android

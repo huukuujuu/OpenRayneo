@@ -13,8 +13,10 @@ android {
         applicationId = "com.openrayneo.android"
         minSdk = 33
         targetSdk = 36
-        // CI builds count up with the workflow run so every APK installs over the previous one; local builds stay at 37.
-        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()?.let { 1000 + it } ?: 37
+        // CI builds count up with the workflow run so every APK installs over the previous one (android-apk.yml sets
+        // OPENRAYNEO_VERSION_CODE); a build with only GITHUB_RUN_NUMBER uses 1000 + run; plain local builds stay at 37.
+        versionCode = System.getenv("OPENRAYNEO_VERSION_CODE")?.toIntOrNull()
+            ?: System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()?.let { 1000 + it } ?: 37
         // CI passes the next minor version per build (see android-apk.yml); local builds keep the base name.
         versionName = System.getenv("OPENRAYNEO_VERSION_NAME") ?: "1.2.0-beta.4"
         buildConfigField("String", "GIT_COMMIT", "\"" + (System.getenv("GITHUB_SHA")?.take(7) ?: "local") + "\"")
