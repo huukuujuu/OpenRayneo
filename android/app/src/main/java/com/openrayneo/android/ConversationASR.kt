@@ -220,24 +220,41 @@ internal class BatchASR(config: JSONObject, private val sentence: (String, Long,
                     .filter { it.startsWith("{") }.map(::JSONObject)
                 if (!response.isSuccessful) {
                     val detail = events.firstOrNull()?.let { "${it.optString("code")} ${it.optString("message")}".trim() }.orEmpty()
+                    // A span with no recognizable speech (noise, a cough) is an empty result, not a failure: failing it paused
+                    // the whole life log and sent it to catch-up (device log, 2026-11-22).
+                    if (response.code == 400 && "HAVE_NO_WORDS" in detail) return
                     // Only a refusal of the model, path or access; key (401), balance, throttling or content errors (DataInspection, bad audio) are not.
                     val refused = response.code == 404 || response.code in setOf(400, 403) &&
                         Regex("model|notfound|not_found|accessdenied|access_denied|unsupported|url", RegexOption.IGNORE_CASE).containsMatchIn(detail)
                     if (refused) AsrModels.batchRefused = true
                     return fail("ASR 요청 실패($model): HTTP ${response.code} $detail".trim() + if (refused) " · 앱을 다시 시작할 때까지 실시간 인식 사용" else "")
                 }
-                events.forEach { handle(it, offset) }
+                handle(events, offset)
             }
         } catch (error: java.io.IOException) { fail("ASR 연결 끊김($model): ${error.javaClass.simpleName}") }
     }
-    private fun handle(data: JSONObject, offset: Long) {
+    private fun handle(events: List<JSONObject>, offset: Long) {
         if (ended) return
-        val output = data.optJSONObject("output") ?: return fail("ASR 요청 실패($model): ${data.optString("code")} ${data.optString("message")}".trim())
-        if (!output.has("sentence") && !output.has("sentences") && !output.has("text"))
-            return fail("ASR 응답 형식이 예상과 다름($model): output ${output.keys().asSequence().toList()}")
-        val list = output.optJSONArray("sentences")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) } } ?: listOfNotNull(output.optJSONObject("sentence"))
-        list.filter { s -> s.optBoolean("sentence_end") && listOf("begin_time", "end_time").all { s.has(it) && !s.isNull(it) } }.forEach { s ->
-            val content = s.optString("text").trim(); val id = "$task:$offset:${s.optString("sentence_id")}"
+        val sentences = mutableListOf<JSONObject>()
+        // An event without text (e.g. a trailing usage-only event) is skipped; the response fails only if none has text.
+        val outputs = events.mapNotNull { it.optJSONObject("output") }.filter { it.has("sentence") || it.has("sentences") || it.has("text") }
+        if (outputs.isEmpty()) {
+            val first = events.firstOrNull()
+            return if (first?.optJSONObject("output") == null) fail("ASR 요청 실패($model): ${first?.optString("code").orEmpty()} ${first?.optString("message").orEmpty()}".trim())
+                else fail("ASR 응답 형식이 예상과 다름($model): output ${first.getJSONObject("output").keys().asSequence().toList()}")
+        }
+        for (output in outputs) {
+            val list = output.optJSONArray("sentences")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) } } ?: listOfNotNull(output.optJSONObject("sentence"))
+            sentences += list.filter { s -> s.optBoolean("sentence_end") && s.optString("text").isNotBlank() && listOf("begin_time", "end_time").all { s.has(it) && !s.isNull(it) } }
+        }
+        // SSE events are growing snapshots: one sentence comes back again and again from the same begin with more text
+        // and a new sentence_id (device records held 98 copies of one sentence). Keep the longest version per begin,
+        // then drop any sentence lying inside another kept one (an earlier split the model later merged).
+        val longest = sentences.groupBy { it.getLong("begin_time") }.values.map { versions -> versions.maxBy { it.getLong("end_time") } }
+        longest.filter { s -> longest.none { other -> other !== s && other.getLong("begin_time") <= s.getLong("begin_time") &&
+                other.getLong("end_time") >= s.getLong("end_time") && other.getLong("end_time") - other.getLong("begin_time") > s.getLong("end_time") - s.getLong("begin_time") } }
+            .sortedBy { it.getLong("begin_time") }.forEach { s ->
+            val content = s.optString("text").trim(); val id = "$task:$offset:${s.getLong("begin_time")}"
             if (content.isEmpty() || !seen.add(id)) return@forEach
             val words = s.optJSONArray("words")?.let { a -> (0 until a.length()).mapNotNull { index ->
                 val word = a.getJSONObject(index)

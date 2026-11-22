@@ -106,7 +106,6 @@ internal class ConversationController(private val context: Context, private val 
     private var tail: MeetingAudioStore.GrowingReader? = null
     private var tailSamples = 0L
     private var drainTimeout: Runnable? = null
-    private var lastSummaryAt = 0L
     private var lastPublished = 0L
     private var nextBackfillAt = 0L
     private var enrollmentTarget: VoicePerson? = null
@@ -130,9 +129,7 @@ internal class ConversationController(private val context: Context, private val 
                     resourcePauseReason = constraint
                     publish(state.copy(status = "$constraint. 원본 오디오의 모든 채널은 계속 저장되며 복구 후 채널별로 보충합니다"))
                 } else if (resourcePauseReason != null) { resourcePauseReason = null; nextBackfillAt = 0 }
-                if (System.currentTimeMillis() - lastSummaryAt > 60_000 && config.optString("memoryAutoSummary", "true") != "false") {
-                    record?.takeIf { it.segments.isNotEmpty() && !it.processingPending }?.let { lastSummaryAt = System.currentTimeMillis(); enqueueSummary(it.id, "rolling") }
-                }
+                // Summaries run when a record ends and once per finished day, not while recording.
                 if (constraint == null && deferredProcessing && !liveBackfill && savingAudio && captureChannels > 0 && queuedSamples.get() == 0 && System.currentTimeMillis() >= nextBackfillAt && SpeechRounds.ready(context, settings.read())) resumeLive()
                 drainAgent()
             } else if (!closing && state.modelReady) resumePending()
@@ -282,7 +279,10 @@ internal class ConversationController(private val context: Context, private val 
             if (token == generation && epoch == asrEpoch && state.running) {
                 val base = baseFrame * 1000 / 16000
                 val id = "${record!!.id}:c$channel:${base + begin}:${base + end}"
-                pendingSentences.removeAll { it.id == id }
+                // The recognizer can send the same sentence again from the same start with more text: the longer one replaces it.
+                val start = sentenceStart(id)
+                if (pendingSentences.any { sentenceStart(it.id) == start && it.endMS > base + end }) return@post
+                pendingSentences.removeAll { sentenceStart(it.id) == start }
                 pendingSentences += SpeechSegment(id, base + begin, base + end, text, roundId = wake, sourceChannel = channel,
                     words = words.map { it.copy(beginMS = base + it.beginMS, endMS = base + it.endMS) })
                 drainSentences()
@@ -321,6 +321,14 @@ internal class ConversationController(private val context: Context, private val 
             else -> AsrUse.RECORD
         })
         rounds[round] = info; activeASR[channel] = round; round.start()
+    }
+    /** "record:cN:begin:end" → "record:cN:begin:", the part a re-sent, longer version of a sentence keeps. */
+    private fun sentenceStart(id: String) = id.substringBeforeLast(':') + ":"
+    /** Saved segments may carry a ":unit" suffix after the sentence id. */
+    private fun segmentStart(id: String): String {
+        val parts = id.split(':')
+        val sentence = parts.indexOfFirst { it.startsWith("c") && it.drop(1).toIntOrNull() != null }
+        return if (sentence < 0 || parts.size < sentence + 3) id else parts.take(sentence + 2).joinToString(":") + ":"
     }
     private companion object {
         /** Gated always-on: no speech for this long (frames) ends the span; longer than the recognizer's 1.2 s sentence end. */
@@ -372,6 +380,15 @@ internal class ConversationController(private val context: Context, private val 
         pendingSentences.removeAll(ready.toSet())
         ready.forEach { sentence ->
             val channel = sentence.sourceChannel; val channelSelf = fixedSelf(channel)
+            // An earlier, shorter version of this sentence already saved (same channel and start, other end): replace it.
+            val start = sentenceStart(sentence.id)
+            val earlier = record!!.segments.filter { segmentStart(it.id) == start && it.id != sentence.id && !it.id.startsWith(sentence.id + ":") }
+            // Keep a saved version that is longer, or that the user corrected by hand.
+            if (earlier.any { it.endMS > sentence.endMS || it.identityBasis == "manual" }) return@forEach
+            if (earlier.isNotEmpty()) {
+                val gone = earlier.map { it.id }.toSet()
+                record = record!!.copy(segments = record!!.segments.filterNot { it.id in gone }); pendingAgent.removeAll { it.id in gone }
+            }
             val self = if (channelSelf) repository.ensureSelf() else null
             val groups = mutableListOf<SpeechSegment>()
             val precise = sentence.words.isNotEmpty() && sentence.words.joinToString("") { it.text } == sentence.text && sentence.words.all { it.endMS > it.beginMS }
@@ -612,6 +629,8 @@ internal class ConversationController(private val context: Context, private val 
         }
     }
     private fun enqueueSummary(id: String, kind: String, date: String = "") {
+        // "기록을 자동으로 요약" off: only the summary button runs one.
+        if (kind != "manual" && settings.read().optString("memoryAutoSummary", "true") == "false") return
         if (!summaryConfigured() || activeSummary == Triple(id, kind, date) || summaryJobs.any { it.first == id && it.second == kind && it.third == date }) return
         summaryJobs += Triple(id, kind, date); drainSummaries()
     }
