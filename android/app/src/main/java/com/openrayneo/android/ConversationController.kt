@@ -40,8 +40,13 @@ internal class ConversationController(private val context: Context, private val 
     private var phoneVoice: PhoneVoiceDetector? = null
     // Worker thread: always-on gating sends only speech spans to the recognizer (silence is not billed).
     private var lastSpeechEnd = Long.MIN_VALUE / 2
-    /** A glasses round with gated spans is open: the assistant waits for its end, as when one recognizer session spanned it. */
-    private var gatedRound = false
+    /**
+     * Always-on: when the oldest sentence now waiting for the assistant was queued. Sentences are handed over in
+     * batches [AGENT_BATCH_MS] after that, so the Agent judges a few minutes of talk at once instead of every sentence.
+     * (It used to wait for the glasses round to end, which in practice came only when the record stopped.)
+     */
+    private var agentSince = 0L
+    private val agentBatch = Runnable { drainAgent() }
     private val preroll = mutableMapOf<Int, ArrayDeque<Pair<Long, FloatArray>>>()
     @Volatile private var gatedTotal = 0L
     @Volatile private var gatedSent = 0L
@@ -166,7 +171,7 @@ internal class ConversationController(private val context: Context, private val 
             resourcePauseReason = if (mode == ConversationMode.ENROLL) null else resourceConstraint()
             deferredProcessing = mode != ConversationMode.ENROLL && (!SpeechRounds.ready(context, cfg) || resourcePauseReason != null)
             pendingSentences.clear(); pendingAgent.clear(); dispatching = false; manualSpeakers.clear(); laneStarts.clear(); inputThrough.clear()
-            lastSpeechEnd = Long.MIN_VALUE / 2; preroll.clear(); gatedTotal = 0; gatedSent = 0; gatedRound = false
+            lastSpeechEnd = Long.MIN_VALUE / 2; preroll.clear(); gatedTotal = 0; gatedSent = 0; worker.removeCallbacks(agentBatch)
             speakerSentences.clear(); splitSentences = 0; unknownSentences = 0
             resamplers = List(2) { ConversationAudio() }; enrollmentTarget = target
             record = ConversationRecord(mode = mode, source = source, audioAnchors = listOf(AudioAnchor(0, System.currentTimeMillis())),
@@ -240,7 +245,6 @@ internal class ConversationController(private val context: Context, private val 
         val gated = speech != null && !replaying
         val sending = !gated || speech == true || activeASR.isNotEmpty() && startFrame - lastSpeechEnd < SPAN_CLOSE
         if (gated) {
-            gatedRound = true
             if (speech == true) lastSpeechEnd = startFrame + pcm.frames
             gatedTotal += pcm.frames; if (sending) gatedSent += pcm.frames
             if (!sending && activeASR.isNotEmpty()) finishRounds()
@@ -316,7 +320,7 @@ internal class ConversationController(private val context: Context, private val 
         }, use = when (state.source) {
             ConversationSource.NATIVE -> AsrUse.WAKE
             ConversationSource.REALTIME -> AsrUse.LIVE
-            // Gated spans (also live catch-up) go whole to the non-streaming model; the assistant still runs at the round end.
+            // Gated spans (also live catch-up) go whole to the non-streaming model; the assistant gets batches (see agentSince).
             ConversationSource.ALWAYS_ON -> if (gating && !replaying && !AsrModels.batchRefused) AsrUse.SPAN else AsrUse.RECORD
             else -> AsrUse.RECORD
         })
@@ -335,6 +339,8 @@ internal class ConversationController(private val context: Context, private val 
         const val SPAN_CLOSE = 16_000L * 5 / 2
         /** Audio kept before speech is detected, so the first word is not cut (the detectors need a moment). */
         const val PREROLL = 16_000 * 6 / 10
+        /** Always-on: how long sentences collect before the assistant judges them together. */
+        const val AGENT_BATCH_MS = 3 * 60 * 1000L
     }
     private fun commitCursor(channel: Int, frames: Long) {
         val old = record ?: return
@@ -351,12 +357,12 @@ internal class ConversationController(private val context: Context, private val 
             if (token != generation || !state.running || closing) return@post
             record = record?.let { it.copy(audioAnchors = it.audioAnchors.filter { a -> a.offsetMS != base / 16 } + AudioAnchor(base / 16, receivedAt)) }; saveRecord()
             if (liveBackfill) return@post
-            engines.values.forEach { it.beginRound(base / 16) }; drainSentences(); finishRounds(); gatedRound = false; roundId = wakeId; roundBaseMS = base / 16
+            engines.values.forEach { it.beginRound(base / 16) }; drainSentences(); finishRounds(); roundId = wakeId; roundBaseMS = base / 16
             lanes().forEach { laneStarts[it] = base }; preroll.clear()
         } }
     }
     fun endRound() { writer.post { worker.post {
-        if (state.running && !closing && !liveBackfill) { engines.values.forEach { it.flush() }; drainSentences(); finishRounds(); gatedRound = false; drainAgent() }
+        if (state.running && !closing && !liveBackfill) { engines.values.forEach { it.flush() }; drainSentences(); finishRounds(); drainAgent() }
     } } }
     fun transportError(message: String) = fail(message, generation)
     fun report(message: String) { publish(state.copy(error = message)) }
@@ -422,7 +428,10 @@ internal class ConversationController(private val context: Context, private val 
                     saveRecord()
                     val token = generation; val source = state.source
                     if (!replaying) main.post { if (token == generation && state.running) transcript(segment, source) }
-                    if (source != ConversationSource.VOICE_MEMO && (source != ConversationSource.NATIVE || segment.roundId == roundId)) pendingAgent += segment
+                    if (source != ConversationSource.VOICE_MEMO && (source != ConversationSource.NATIVE || segment.roundId == roundId)) {
+                        if (pendingAgent.isEmpty()) agentSince = android.os.SystemClock.elapsedRealtime()
+                        pendingAgent += segment
+                    }
                 }
             }
         }
@@ -435,7 +444,10 @@ internal class ConversationController(private val context: Context, private val 
     }
     private fun drainAgent() {
         if (dispatching || pendingAgent.isEmpty() || !state.running) return
-        if (state.source == ConversationSource.ALWAYS_ON && !liveBackfill && !replaying && (rounds.isNotEmpty() || gatedRound)) return
+        if (state.source == ConversationSource.ALWAYS_ON && !replaying) {
+            val wait = agentSince + AGENT_BATCH_MS - android.os.SystemClock.elapsedRealtime()
+            if (wait > 0) { worker.removeCallbacks(agentBatch); worker.postDelayed(agentBatch, wait); return }
+        }
         val input = pendingAgent.toList(); val token = generation; val source = state.source; val contextGeneration = agentContextGeneration
         val payload = modePolicy.input(source, input, repository.people, previous, previousReply).put("recordId", record?.id).put("recordRevision", record?.revision)
         val voice = VoiceRequest(input.joinToString(" ") { it.text }, payload.toString(), source, input.lastOrNull()?.roundId,
@@ -447,7 +459,8 @@ internal class ConversationController(private val context: Context, private val 
                 if (token != generation || contextGeneration != agentContextGeneration) return@post
                 dispatching = false
                 if (accepted == true) { previous = input.map { it.text }; publish(state.copy(status = "어시스턴트에 전달함")); drainAgent() }
-                else if (accepted == false) { pendingAgent.addAll(0, input); worker.postDelayed({ drainAgent() }, 1_000) }
+                // A refused batch is retried at once (with anything heard meanwhile), not after another batch wait.
+                else if (accepted == false) { pendingAgent.addAll(0, input); agentSince = 0; worker.postDelayed({ drainAgent() }, 1_000) }
             }
         }
     }
@@ -556,7 +569,7 @@ internal class ConversationController(private val context: Context, private val 
         }
         speakerSentences.clear(); splitSentences = 0; unknownSentences = 0
         replaying = false; pendingSentences.clear(); pendingAgent.clear(); dispatching = false; engines.values.forEach { it.reset() }; manualSpeakers.clear(); closing = false
-        preroll.clear(); gatedRound = false; catchUpVoice?.release(); catchUpVoice = null; writer.post { phoneVoice?.release(); phoneVoice = null }
+        preroll.clear(); worker.removeCallbacks(agentBatch); catchUpVoice?.release(); catchUpVoice = null; writer.post { phoneVoice?.release(); phoneVoice = null }
         publish(state.copy(running = false, stopping = false, segments = finished?.segments.orEmpty(), activeRecord = null, records = repository.records, status = message))
         if (finished != null && finished.mode != ConversationMode.ENROLL && !finished.processingPending && finished.segments.isNotEmpty()) { enqueueSummary(finished.id, "record_end"); scheduleDaySummaries(finished.source == ConversationSource.ALWAYS_ON) }
         val continuation = stopAfter; stopAfter = null; main.post { if (continuation != null) continuation() else stopped() }
