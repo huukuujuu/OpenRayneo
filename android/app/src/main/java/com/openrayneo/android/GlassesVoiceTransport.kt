@@ -10,8 +10,8 @@ internal class GlassesVoiceTransport(
     private val write: (ByteArray, (Result<Unit>) -> Unit) -> Unit,
     private val wake: () -> Unit, private val beginRound: () -> Unit,
     private val endRound: (Boolean) -> Unit, private val audio: (ByteArray) -> Unit,
-    /** Per-frame speech flags (vpuMask | vadMask) of an always-on batch, delivered before its audio. */
-    private val activity: (List<Boolean>) -> Unit,
+    /** Per-frame flags of an always-on batch, delivered before its audio: [VoiceGate.SPEECH] (vpu or vad), [VoiceGate.VPU]. */
+    private val activity: (List<Int>) -> Unit,
     private val failure: (String) -> Unit,
     /** App log for assistant control messages we send (live partials excluded). */
     private val trace: (String) -> Unit = {},
@@ -98,6 +98,7 @@ internal class GlassesVoiceTransport(
     private var roundBatches = 0
     private var roundFrames = 0
     private var roundSpeech = 0
+    private var roundStereo = 0
     /** Last LifeLog round start (161) or audio (163) of ours: tells whether LifeLog came back after a voice memo. */
     private var lifeHeardAt = 0L
     /** A re-sent LifeLog switch is a nudge: its refusal must not stop the running always-on record. */
@@ -204,7 +205,7 @@ internal class GlassesVoiceTransport(
                 // without an end). Ignoring this left LifeLog "on" on the glasses with no audio ever sent.
                 if (lifeTask != null) { trace("종일 기록: 안경이 새 라운드를 시작해 이전 라운드를 닫고 이어 받음"); lifeTask = null; endRound(false) }
                 val id = UUID.randomUUID().toString().lowercase(); lifeTask = id; lifeHeardAt = System.currentTimeMillis()
-                roundBatches = 0; roundFrames = 0; roundSpeech = 0
+                roundBatches = 0; roundFrames = 0; roundSpeech = 0; roundStereo = 0
                 beginRound()
                 send(0x0d, 162, JSONObject().put("taskId", id).put("idleTimeoutSec", 300))
                 send(0x0d, 168, JSONObject().put("inRealtimePage", false))
@@ -222,17 +223,23 @@ internal class GlassesVoiceTransport(
                 if (count !in 1..31 || bytes.size != count * 240) { failure("종일 기록 오디오 프레임 길이 이상으로 이번 라운드를 중지함"); return }
                 if (body.has("vpuMask") || body.has("vadMask")) {
                     val vpu = body.optLong("vpuMask"); val vad = body.optLong("vadMask")
-                    val flags = List(count) { ((vpu shr it) and 1L) != 0L || ((vad shr it) and 1L) != 0L }
-                    roundSpeech += flags.count { it }
+                    val flags = List(count) {
+                        val bone = ((vpu shr it) and 1L) != 0L
+                        (if (bone || ((vad shr it) and 1L) != 0L) VoiceGate.SPEECH else 0) or (if (bone) VoiceGate.VPU else 0)
+                    }
+                    roundSpeech += flags.count { it != 0 }
                     activity(flags)
                 } else roundSpeech += count
                 if (roundBatches++ == 0) trace("종일 기록 라운드 오디오 수신 시작")
+                // TOC byte bit 2: the frame is stereo-coded (two microphones), else both decoded channels are equal.
+                repeat(count) { index -> if (bytes[index * 240].toInt() and 0x04 != 0) roundStereo++ }
+                if (roundFrames < 3000 && roundFrames + count >= 3000) trace("종일 기록 첫 1분: 스테레오 프레임 $roundStereo/${roundFrames + count}")
                 roundFrames += count
                 repeat(count) { index -> audio(bytes.copyOfRange(index * 240, (index + 1) * 240)) }
             }
             165 -> if (source == ConversationSource.ALWAYS_ON && (body.optString("taskId").isBlank() || body.optString("taskId") == lifeTask)) {
                 // Diagnostics: whether audio came at all and how much the glasses marked as speech (the live gate keeps only that).
-                trace("종일 기록 라운드 끝: 오디오 ${roundBatches}묶음 ${roundFrames}프레임, 말소리 표시 ${roundSpeech}프레임")
+                trace("종일 기록 라운드 끝: 오디오 ${roundBatches}묶음 ${roundFrames}프레임(스테레오 $roundStereo), 말소리 표시 ${roundSpeech}프레임")
                 lifeTask = null; endRound(false)
             }
         }

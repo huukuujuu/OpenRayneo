@@ -324,7 +324,9 @@ private fun SpeakerBindingDialog(model: AppModel, record: ConversationRecord, se
     }
     var personId by remember { mutableStateOf(segment.personId ?: record.speakerPeople[segment.speaker]) }
     var name by remember { mutableStateOf("") }
-    var all by remember { mutableStateOf(segment.speaker != UNKNOWN_SPEAKER) }
+    // A channel label (or the bone-conduction "self") is not one voice: naming it would name everyone on that channel.
+    val byVoice = segment.speaker != UNKNOWN_SPEAKER && segment.identityBasis != "channel" && segment.identityBasis != "vpu"
+    var all by remember { mutableStateOf(byVoice) }
     var rememberVoice by remember { mutableStateOf(record.speakerSamples[segment.speaker]?.isNotEmpty() == true) }
     val picked = model.selectedContact
     LaunchedEffect(picked) { if (picked != null) { name = picked.name; personId = null } }
@@ -332,7 +334,7 @@ private fun SpeakerBindingDialog(model: AppModel, record: ConversationRecord, se
         Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Note(segment.text)
             TextButton(onClick = { history = true }) { Text("지난 기록에서 여러 문장 한꺼번에 고치기") }
-            Row { Checkbox(all, { all = it }, enabled = segment.speaker != UNKNOWN_SPEAKER); Text("이 기록에서 같은 목소리 전부") }
+            Row { Checkbox(all, { all = it }, enabled = byVoice); Text("이 기록에서 같은 목소리 전부") }
             people.forEach { person ->
                 Row(Modifier.fillMaxWidth().clickable { personId = person.id }) {
                     RadioButton(personId == person.id, { personId = person.id }); Text(person.name)

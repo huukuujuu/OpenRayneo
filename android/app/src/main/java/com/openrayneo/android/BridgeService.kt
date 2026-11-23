@@ -219,7 +219,8 @@ internal class BridgeService : Service() {
             conversations.accept(left, right)
         }
         voiceTransport = GlassesVoiceTransport(connection::sendFrame, ::nativeWake, {
-            voiceAudio.stop(); conversations.voiceRoundBoundary(); voiceAudio.start(1); conversations.nextRound()
+            // LifeLog audio is decoded as two channels (both glasses microphones when the frames are stereo-coded).
+            voiceAudio.stop(); conversations.voiceRoundBoundary(); voiceAudio.start(2); conversations.nextRound()
         }, { ended ->
             if (ended) conversations.stop() else { voiceAudio.stop(); conversations.voiceRoundBoundary(); conversations.endRound() }
         }, { voiceAudio.accept(it) }, { conversations.voiceActivity(it) }, { conversations.transportError(it) }, ::onLog)
@@ -483,7 +484,7 @@ internal class BridgeService : Service() {
                 ConversationSource.VOICE_MEMO -> Unit
                 ConversationSource.NATIVE, ConversationSource.ALWAYS_ON -> {
                     conversationOwnsDisplay = false
-                    dispatch(GlassesEvent.PauseDisplay); voiceAudio.start(1); voiceTransport.start(source)
+                    dispatch(GlassesEvent.PauseDisplay); voiceAudio.start(if (source == ConversationSource.ALWAYS_ON) 2 else 1); voiceTransport.start(source)
                 }
             }
         } else {

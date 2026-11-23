@@ -52,7 +52,7 @@ internal class ConversationController(private val context: Context, private val 
     @Volatile private var gatedSent = 0L
     private fun gateSummary() = if (gatedTotal == 0L) "" else "말소리만 인식 서버로 보냄: 전체의 ${gatedSent * 100 / gatedTotal}%"
     /** Glasses speech flags (one per 20 ms frame) for always-on audio; ignored unless gating is on. */
-    fun voiceActivity(frames: List<Boolean>) { if (gating && state.running && !closing && !replaying) gate.offer(frames) }
+    fun voiceActivity(frames: List<Int>) { if (gating && state.running && !closing && !replaying) gate.offer(frames) }
     /** Main thread, when an always-on round starts or ends: queued audio is discarded there, so drop its flags too. */
     fun voiceRoundBoundary() = gate.clearFlags()
     private val power = context.getSystemService(android.os.PowerManager::class.java)
@@ -123,6 +123,8 @@ internal class ConversationController(private val context: Context, private val 
             { message -> log?.invoke("c$channel $message") })
     }
     private fun fixedSelf(channel: Int) = SpeakerChannelPolicy.fixedSelf(record!!.channelPolicy, channel) && state.mode != ConversationMode.ENROLL
+    /** No speaker engine on this channel: its sentences are labeled by channel (or as the wearer, see [fixedSelf]). */
+    private fun fixedChannel(channel: Int) = SpeakerChannelPolicy.channelOnly(record!!.channelPolicy, channel) && state.mode != ConversationMode.ENROLL
     private fun lanes() = 1..(record?.audioChannels ?: 1)
     private val maintenance = object : Runnable {
         override fun run() {
@@ -162,7 +164,8 @@ internal class ConversationController(private val context: Context, private val 
         gating = source == ConversationSource.ALWAYS_ON && cfg.optString("glassesVoiceGate", "true") != "false"
         writer.post { gate.reset(); phoneVoice?.release(); phoneVoice = if (gating) PhoneVoiceDetector(context) else null }
         publish(state.copy(activeRecord = null, running = true, stopping = false, mode = mode, source = source, segments = emptyList(), error = null,
-            status = if (mode == ConversationMode.ENROLL) "등록은 지정 채널의 본인 목소리만 수집합니다" else if (source == ConversationSource.REALTIME) "2채널 유지: 채널 1은 기본 본인, 채널 2는 별도 식별" else "혼합/단일 채널 오디오는 전체 화자 식별",
+            status = if (mode == ConversationMode.ENROLL) "등록은 지정 채널의 본인 목소리만 수집합니다" else if (source == ConversationSource.REALTIME) "2채널 유지: 채널 1은 기본 본인, 채널 2는 채널로만 구분"
+                else if (source == ConversationSource.ALWAYS_ON) "채널 1/2로 구분하고 골전도 표시가 있는 말은 본인으로 표시" else "채널로만 구분",
             enrollmentSeconds = 0f, enrollmentReady = false, enrollmentCanConfirm = false, enrollmentTotalSeconds = 0f, decodedSeconds = 0.0))
         worker.post {
             config = cfg; samples = 0; captureChannels = 0; roundBaseMS = 0; roundId = wakeId; closing = false
@@ -188,8 +191,8 @@ internal class ConversationController(private val context: Context, private val 
         val old = record!!
         val policy = if (recovering) old.channelPolicy else SpeakerChannelPolicy.policy(state.source, channels)
         record = old.copy(audioChannels = channels, channelPolicy = policy)
-        if (policy == SpeakerChannelPolicy.DUAL_SELF && state.mode != ConversationMode.ENROLL) repository.ensureSelf()
-        val needed = if (state.mode == ConversationMode.ENROLL) listOf(enrollmentChannel) else (1..channels).filterNot(::fixedSelf)
+        if (SpeakerChannelPolicy.fixedSelf(policy, 1) && state.mode != ConversationMode.ENROLL) repository.ensureSelf()
+        val needed = if (state.mode == ConversationMode.ENROLL) listOf(enrollmentChannel) else (1..channels).filterNot(::fixedChannel)
         engines.keys.filter { it !in needed }.toList().forEach { engines.remove(it)?.close() }
         needed.forEach { channel -> engine(channel).reset(laneStarts[channel]?.times(1000)?.div(16000) ?: 0,
             meeting = true, enrollment = state.mode == ConversationMode.ENROLL, labelPrefix = "c$channel:R$asrEpoch-") }
@@ -201,6 +204,10 @@ internal class ConversationController(private val context: Context, private val 
         writer.post {
             if (token != generation) return@post
             val count = if (right.isEmpty()) 1 else 2
+            // A mono-coded Opus frame decodes to two (nearly) equal channels: keep it on channel 1 only, or channel 2 would
+            // transcribe every word twice (the batch recognizer skips an all-silent span). Near, not exact: the decoder's
+            // per-channel filter memory leaves a few LSB of difference right after a stereo/mono switch.
+            val second = if (count == 2 && right.size == left.size && left.indices.all { kotlin.math.abs(left[it] - right[it]) <= MONO_TOLERANCE }) ShortArray(right.size) else right
             try {
                 if (captureChannels == 0) {
                     captureChannels = count
@@ -208,7 +215,7 @@ internal class ConversationController(private val context: Context, private val 
                     worker.post { if (token == generation) prepareChannels(count) }
                 }
                 check(captureChannels == count) { "같은 기록 안에서 수신 채널이 바뀌었습니다. 기록을 다시 시작하세요" }
-                val pcm = ConversationPCM(if (count == 2) listOf(resamplers[0].convert(left), resamplers[1].convert(right)) else listOf(resamplers[0].convert(left)))
+                val pcm = ConversationPCM(if (count == 2) listOf(resamplers[0].convert(left), resamplers[1].convert(second)) else listOf(resamplers[0].convert(left)))
                 val start = samples
                 if (savingAudio) recordings.appendChannels(pcm)
                 // Only the live ASR/speaker path is gated; the saved recording stays raw for later backfill.
@@ -268,7 +275,7 @@ internal class ConversationController(private val context: Context, private val 
                 activeASR[channel]?.append(selected)
             }
             inputThrough[channel] = startFrame + data.size
-            if (!fixedSelf(channel)) engine(channel).accept(if (gated && speech == false) FloatArray(selected.size) else selected)
+            if (!fixedChannel(channel)) engine(channel).accept(if (gated && speech == false) FloatArray(selected.size) else selected)
         }
         drainSentences()
     }
@@ -302,7 +309,7 @@ internal class ConversationController(private val context: Context, private val 
             if (token == generation && epoch == asrEpoch) {
                 drainSentences()
                 val end = info.endFrame
-                val localEnd = if (fixedSelf(channel)) inputThrough[channel] ?: 0 else engine(channel).analyzedThroughMS * 16
+                val localEnd = if (fixedChannel(channel)) inputThrough[channel] ?: 0 else engine(channel).analyzedThroughMS * 16
                 if (end != null && localEnd >= end && pendingSentences.none { it.sourceChannel == channel && it.endMS * 16 <= end }) commitCursor(channel, end)
                 if (closing && rounds.isEmpty()) completeStop()
                 else if (activeASR[channel] === round) { activeASR.remove(channel); if (liveBackfill) pauseLive("채널 $channel 이번 라운드 종료, 잠시 후 계속 따라잡습니다") }
@@ -339,6 +346,10 @@ internal class ConversationController(private val context: Context, private val 
         const val SPAN_CLOSE = 16_000L * 5 / 2
         /** Audio kept before speech is detected, so the first word is not cut (the detectors need a moment). */
         const val PREROLL = 16_000 * 6 / 10
+        /** Largest sample difference (PCM16) at which two decoded channels still count as one mono-coded signal. */
+        const val MONO_TOLERANCE = 8
+        /** Always-on: a sentence whose 20 ms frames carry the VPU flag at least this often is the wearer's. */
+        const val VPU_SELF_SHARE = 0.3
         /** Always-on: how long sentences collect before the assistant judges them together. */
         const val AGENT_BATCH_MS = 3 * 60 * 1000L
     }
@@ -381,11 +392,11 @@ internal class ConversationController(private val context: Context, private val 
     private fun drainSentences() {
         val ready = pendingSentences.filter { sentence ->
             val channel = sentence.sourceChannel
-            sentence.endMS * 16 <= if (fixedSelf(channel)) inputThrough[channel] ?: 0 else engine(channel).analyzedThroughMS * 16
+            sentence.endMS * 16 <= if (fixedChannel(channel)) inputThrough[channel] ?: 0 else engine(channel).analyzedThroughMS * 16
         }.sortedWith(compareBy({ it.beginMS }, { it.sourceChannel }))
         pendingSentences.removeAll(ready.toSet())
         ready.forEach { sentence ->
-            val channel = sentence.sourceChannel; val channelSelf = fixedSelf(channel)
+            val channel = sentence.sourceChannel; val channelSelf = fixedSelf(channel); val channelLabel = fixedChannel(channel)
             // An earlier, shorter version of this sentence already saved (same channel and start, other end): replace it.
             val start = sentenceStart(sentence.id)
             val earlier = record!!.segments.filter { segmentStart(it.id) == start && it.id != sentence.id && !it.id.startsWith(sentence.id + ":") }
@@ -397,14 +408,21 @@ internal class ConversationController(private val context: Context, private val 
             }
             val self = if (channelSelf) repository.ensureSelf() else null
             val groups = mutableListOf<SpeechSegment>()
-            val precise = sentence.words.isNotEmpty() && sentence.words.joinToString("") { it.text } == sentence.text && sentence.words.all { it.endMS > it.beginMS }
+            // Always-on: the glasses' bone-conduction flag (VPU) only fires on the wearer's own voice.
+            val vpuShare = if (channelLabel && state.source == ConversationSource.ALWAYS_ON && !replaying) gate.vpuShare(sentence.beginMS, sentence.endMS) else null
+            val precise = !channelLabel && sentence.words.isNotEmpty() && sentence.words.joinToString("") { it.text } == sentence.text && sentence.words.all { it.endMS > it.beginMS }
             val units = if (precise) sentence.words.mapIndexed { i, word -> sentence.copy(id = "${sentence.id}:$i", text = word.text, beginMS = word.beginMS, endMS = word.endMS, words = listOf(word)) } else listOf(sentence)
             units.forEach { unit ->
                 val match = if (channelSelf) SpeakerEngine.Assignment(speaker = "c1:$SELF_SPEAKER", personId = self!!.id, stable = true, reason = "2채널 정책: 채널 1은 기본 본인")
+                    else if (channelLabel) vpuShare?.takeIf { it >= VPU_SELF_SHARE }?.let { share ->
+                        SpeakerEngine.Assignment(speaker = "c$channel:$SELF_SPEAKER", personId = repository.ensureSelf().id, stable = true,
+                            reason = "골전도(VPU) 표시 ${(share * 100).toInt()}%: 본인")
+                    } ?: SpeakerEngine.Assignment(speaker = "c$channel:채널$channel", stable = true,
+                        reason = vpuShare?.let { "골전도(VPU) 표시 ${(it * 100).toInt()}%: 채널 구분" } ?: "채널 구분만 사용")
                     else engine(channel).assignment(unit.beginMS, unit.endMS, wordLevel = precise)
                 val manual = manualSpeakers[match.speaker]
                 val person = manual ?: match.personId ?: record!!.speakerPeople[match.speaker].takeIf { match.stable && !match.mixed }
-                val basis = when { manual != null -> "manual"; channelSelf -> "channel1_default_self"; match.mixed -> "mixed"; person != null -> "voiceprint"; else -> "unknown" }
+                val basis = when { manual != null -> "manual"; channelSelf -> "channel1_default_self"; channelLabel -> if (match.personId != null) "vpu" else "channel"; match.mixed -> "mixed"; person != null -> "voiceprint"; else -> "unknown" }
                 val attributed = unit.copy(speaker = if (match.mixed) "c$channel:$MIXED_SPEAKER" else match.speaker, personId = if (match.mixed) null else person,
                     stable = match.stable, mixed = match.mixed, candidates = match.candidates, matchScore = match.score, matchReason = match.reason, identityBasis = basis,
                     timelineAt = record!!.timelineAt(unit.beginMS), timelineEndAt = record!!.timelineAt((unit.endMS - 1).coerceAtLeast(unit.beginMS)) + 1,
@@ -689,9 +707,12 @@ internal class ConversationController(private val context: Context, private val 
         if (state.running || closing || resourceConstraint() != null || System.currentTimeMillis() < nextBackfillAt || !SpeechRounds.ready(context, settings.read())) return
         repository.records.filter { it.processingPending && !it.audioPending && it.audioSamples > 0 }.minByOrNull { it.createdAt }?.let { retranscribe(it.id) }
     }
-    /** Fresh per session or replay: only realtime two-channel records assume channel 1 is the wearer. */
+    /**
+     * Fresh per session or replay: silences channel 2 while channel 1 is clearly louder, so the wearer's words are not
+     * transcribed again on channel 2. Applies to two-channel realtime and always-on audio (mono input never uses it).
+     */
     private fun selfGateFor(source: ConversationSource, mode: ConversationMode, cfg: JSONObject): SelfVoiceGate? =
-        if (source != ConversationSource.REALTIME || mode == ConversationMode.ENROLL) null
+        if (source != ConversationSource.REALTIME && source != ConversationSource.ALWAYS_ON || mode == ConversationMode.ENROLL) null
         else cfg.optString("selfVoiceMarginDb").ifBlank { "6" }.toDoubleOrNull()?.takeIf { it > 0 }?.let { margin ->
             SelfVoiceGate(margin, cfg.optString("selfVoiceFloorDb").toDoubleOrNull() ?: -50.0,
                 (cfg.optString("selfVoiceHoldMs").toIntOrNull() ?: 300) / 20)
@@ -771,19 +792,27 @@ internal class SelfVoiceGate(private val marginDb: Double,
  * the decoder emits its PCM, which gives the lead-in for free.
  */
 internal class VoiceGate {
-    private val flags = java.util.concurrent.ConcurrentLinkedDeque<Boolean>()
+    private val flags = java.util.concurrent.ConcurrentLinkedDeque<Int>()
+    /** 20 ms slots of this record (sample / [FRAME]) whose frame carried the VPU flag. Writer writes, worker reads. */
+    private val vpu = java.util.BitSet()
+    private var sample = 0L
     // Writer-thread state.
     private var position = 0
     private var open = true
     private var hold = 0
     private var total = 0L
     private var passed = 0L
-    fun offer(frames: List<Boolean>) {
+    fun offer(frames: List<Int>) {
         flags.addAll(frames)
         // Dropped decoder packets would leave flags behind their audio; resync instead of drifting.
         while (flags.size > MAX_PENDING) flags.pollFirst()
     }
-    fun reset() { flags.clear(); position = 0; open = true; hold = 0; total = 0; passed = 0 }
+    fun reset() { flags.clear(); position = 0; open = true; hold = 0; total = 0; passed = 0; sample = 0; synchronized(vpu) { vpu.clear() } }
+    /** Share of the 20 ms frames in [beginMS, endMS) of the record that the glasses flagged as bone-conducted (wearer) voice. */
+    fun vpuShare(beginMS: Long, endMS: Long): Double {
+        val first = (beginMS / 20).toInt(); val last = ((endMS + 19) / 20).toInt().coerceAtLeast(first + 1)
+        return synchronized(vpu) { vpu.get(first, last).cardinality() } / (last - first).toDouble()
+    }
     /** Thread safe; keeps statistics. */
     fun clearFlags() = flags.clear()
     /**
@@ -798,21 +827,24 @@ internal class VoiceGate {
                 if (next == null) open = false
                 else {
                     total++
-                    if (next || flags.asSequence().take(LEAD).any { it }) hold = HANG
+                    if (next and VPU != 0) synchronized(vpu) { vpu.set((sample / FRAME).toInt()) }
+                    if (next and SPEECH != 0 || flags.asSequence().take(LEAD).any { it and SPEECH != 0 }) hold = HANG
                     open = hold > 0; if (hold > 0) hold--
                     if (open) passed++
                 }
             }
             if (open) any = true
-            position = (position + 1) % FRAME
+            position = (position + 1) % FRAME; sample++
         }
         return any
     }
-    private companion object {
-        const val FRAME = 320       // 20 ms at 16 kHz
-        const val LEAD = 10         // 200 ms before speech
-        const val HANG = 25         // 500 ms after speech
-        const val MAX_PENDING = 150
+    companion object {
+        const val SPEECH = 1
+        const val VPU = 2
+        private const val FRAME = 320       // 20 ms at 16 kHz
+        private const val LEAD = 10         // 200 ms before speech
+        private const val HANG = 25         // 500 ms after speech
+        private const val MAX_PENDING = 150
     }
 }
 
@@ -832,9 +864,10 @@ internal class PhoneVoiceDetector(context: Context) {
     fun speech(pcm: ConversationPCM): Boolean {
         var any = detected
         for (i in 0 until pcm.frames) {
-            var sum = 0f
-            pcm.channels.forEach { sum += it[i] }
-            window[size++] = sum / pcm.channels.size
+            // The louder channel, not the mean: a silenced channel 2 must not halve the level the detector hears.
+            var loudest = 0f
+            pcm.channels.forEach { if (kotlin.math.abs(it[i]) > kotlin.math.abs(loudest)) loudest = it[i] }
+            window[size++] = loudest
             if (size == WINDOW) {
                 vad.acceptWaveform(window.copyOf()); size = 0
                 detected = vad.isSpeechDetected()

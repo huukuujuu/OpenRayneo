@@ -197,6 +197,8 @@ internal class BatchASR(config: JSONObject, private val sentence: (String, Long,
     private fun flush() {
         if (chunk.size == 0L) return
         val pcm = chunk.readByteArray(); val offset = chunkStartMs; chunkStartMs = appended * 1000 / 16000
+        // An all-silent span (channel 2 of mono-coded audio, or muted while the wearer spoke) is not sent or billed.
+        if (pcm.all { it == 0.toByte() }) return
         uploads.incrementAndGet()
         sender.execute {
             // Anything thrown here would kill the app from the executor thread or let the round complete without its text.
