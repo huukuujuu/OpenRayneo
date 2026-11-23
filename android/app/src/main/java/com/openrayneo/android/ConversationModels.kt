@@ -18,7 +18,8 @@ private val storedLabels = listOf(SELF_SPEAKER to "본인", MIXED_SPEAKER to "�
 /** Korean text for speaker labels, memory kinds and match reasons saved by older builds. */
 fun displayLabel(raw: String) = storedLabels.fold(raw) { text, (stored, shown) -> text.replace(stored, shown) }
 /** Short speaker tag for screens and exports: "c1:R0-A" → "A"; older per-turn labels of short speech → "짧은 발화". */
-fun speakerTag(raw: String) = if (raw.contains("짧은구간")) "짧은 발화" else displayLabel(raw).substringAfterLast('-').substringAfterLast(':')
+fun speakerTag(raw: String) = (if (raw.contains("짧은구간")) "짧은 발화" else displayLabel(raw).substringAfterLast('-').substringAfterLast(':'))
+    .let { if (it == SELF_SPEAKER) "나" else it }
 
 internal enum class ConversationMode(val title: String) { DAILY("일상"), MEETING("회의"), ENROLL("목소리 등록") }
 internal enum class ConversationSource(val title: String) { REALTIME("실시간 듀얼 마이크"), NATIVE("음성 깨우기"), ALWAYS_ON("종일 기록"), VOICE_MEMO("안경 음성 메모") }
@@ -115,6 +116,8 @@ internal data class ConversationRecord(
     val derived: List<RecordDerived> = emptyList(), val summaries: List<RecordSummary> = emptyList(),
     val audioAnchors: List<AudioAnchor> = emptyList(), val audioChannels: Int = 1,
     val channelPolicy: String = "legacy_selected_mono", val processingCursors: Map<String, Long> = emptyMap(),
+    /** Always-on records split by a wake or a glasses feature share the first record's id here (one session, one summary). */
+    val sessionId: String = "",
 ) {
     fun completedFrames(channel: Int): Long = processingCursors[channel.toString()] ?: segments.filter { it.sourceChannel == channel }.maxOfOrNull { it.endMS * 16 } ?: 0L
     fun anchorAt(offsetMS: Long): AudioAnchor? = audioAnchors.filter { it.offsetMS <= offsetMS }.maxByOrNull { it.offsetMS }
@@ -130,7 +133,7 @@ internal data class ConversationRecord(
         .put("revision", revision).put("changeSequence", changeSequence).put("processingPending", processingPending)
         .put("derived", JSONArray(derived.map { it.json() })).put("summaries", JSONArray(summaries.map { it.json() }))
         .put("audioAnchors", JSONArray(audioAnchors.map { it.json() })).put("audioChannels", audioChannels)
-        .put("channelPolicy", channelPolicy).put("processingCursors", JSONObject(processingCursors))
+        .put("channelPolicy", channelPolicy).put("processingCursors", JSONObject(processingCursors)).put("sessionId", sessionId)
         .put("speakerSamples", JSONObject().apply { speakerSamples.forEach { (id, samples) -> put(id, JSONArray(samples.map { JSONArray(it.toList()) })) } })
     companion object {
         fun parse(v: JSONObject) = ConversationRecord(v.getString("id"), ConversationMode.valueOf(v.getString("mode")), v.getLong("createdAt"), v.getString("title"),
@@ -146,7 +149,7 @@ internal data class ConversationRecord(
             v.optJSONArray("derived")?.let { a -> List(a.length()) { RecordDerived.parse(a.getJSONObject(it)) } } ?: emptyList(),
             v.optJSONArray("summaries")?.let { a -> List(a.length()) { RecordSummary.parse(a.getJSONObject(it)) } } ?: emptyList(),
             v.optJSONArray("audioAnchors")?.let { a -> List(a.length()) { AudioAnchor.parse(a.getJSONObject(it)) } } ?: emptyList(), v.optInt("audioChannels", 1), v.optString("channelPolicy", "legacy_selected_mono"),
-            v.optJSONObject("processingCursors")?.let { rows -> rows.keys().asSequence().associateWith { rows.getLong(it) } } ?: emptyMap())
+            v.optJSONObject("processingCursors")?.let { rows -> rows.keys().asSequence().associateWith { rows.getLong(it) } } ?: emptyMap(), v.optString("sessionId"))
     }
 }
 internal data class ConversationState(
@@ -159,4 +162,6 @@ internal data class ConversationState(
     val enrollmentSeconds: Float = 0f, val enrollmentReady: Boolean = false, val enrollmentCanConfirm: Boolean = false, val enrollmentTotalSeconds: Float = 0f, val decodedSeconds: Double = 0.0,
     val voiceGate: String = "",
     val modelReady: Boolean = false, val summarizing: Boolean = false, val stopping: Boolean = false,
+    /** Always-on: when the waiting sentences go to the assistant (wall clock), 0 when none wait. */
+    val agentDueAt: Long = 0,
 )

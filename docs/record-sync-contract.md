@@ -66,6 +66,7 @@
 | `processingPending,audioPending` | 처리 대기 / 원본 오디오 쓰는 중. ASR/모델 실패로 진행 상태를 지우면 안 됨 |
 | `audioId,audioSamples,audioChannels` | 오디오 신원, 채널당 16k frames, 실제 저장 채널 수 |
 | `speakerPeople,channelPolicy,processingCursors` | 기록 내 신원 매핑, 채널 정책, 채널별 처리 커서 |
+| `sessionId` | 종일 기록 세션: 깨우기·안경 기능으로 멈췄다 30분 안에 다시 시작한 종일 기록은 첫 기록의 id를 공유하며 세션 끝 요약이 함께 다룬다. 없거나 빈 값이면 기록 자신 |
 | `audioAnchors` | 수음 회차별 PCM offset과 휴대폰 수신 벽시계 매핑 |
 
 `audioAnchors`는 `[{"offsetMS":20000,"receivedAt":1794800000000,"timeBasis":"received"}]` 형태다.

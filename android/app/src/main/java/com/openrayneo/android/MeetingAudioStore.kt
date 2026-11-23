@@ -18,6 +18,8 @@ import javax.crypto.spec.GCMParameterSpec
 internal class MeetingAudioStore(context: Context) {
     private val folder = File(context.filesDir, "meeting-audio").apply { mkdirs() }
     private fun file(id: String): File { require(id.matches(Regex("[A-Za-z0-9-]{1,80}"))); return File(folder, "$id.pcm.enc") }
+    /** Always-on bone-conduction (VPU) flags of a recording: the 20 ms slot numbers that carried the flag, as Ints. */
+    fun vpuFile(id: String): File { require(id.matches(Regex("[A-Za-z0-9-]{1,80}"))); return File(folder, "$id.vpu") }
     private val secret by lazy { key() }
     private var output: DataOutputStream? = null
     private val buffer = ByteArrayOutputStream(64000)

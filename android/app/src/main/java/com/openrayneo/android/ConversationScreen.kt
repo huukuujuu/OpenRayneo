@@ -78,6 +78,11 @@ internal fun ConversationScreen(model: AppModel, actions: UiActions, open: (Stri
                 } else {
                     Text("${state.mode.title} · ${state.source.title} · 오디오 ${state.decodedSeconds.toInt()}초 수신")
                     if (state.voiceGate.isNotEmpty()) Text(state.voiceGate)
+                    if (state.source == ConversationSource.ALWAYS_ON) state.activeRecord?.let { active ->
+                        val rows = active.segments
+                        Note("문장 ${rows.size}개 · 채널2 ${rows.count { it.sourceChannel == 2 }}개 · 골전도로 본인 ${rows.count { it.identityBasis == "vpu" }}개")
+                    }
+                    if (state.agentDueAt > 0) Note("다음 AI 판단: 약 ${((state.agentDueAt - now + 59_999) / 60_000).coerceAtLeast(1)}분 뒤 (그동안 들은 말을 한 번에 판단)")
                     ToolButton(onClick = { model.service().conversations.stop() }, enabled = !state.stopping) { Text(if (state.stopping) "마무리 중…" else "기록 및 음성 수신 중지") }
                 }
                 Note(state.status)
@@ -120,7 +125,11 @@ internal fun ConversationScreen(model: AppModel, actions: UiActions, open: (Stri
         }
         val begin = (if (monthly) date.withDayOfMonth(1) else date).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
         val end = (if (monthly) date.withDayOfMonth(1).plusMonths(1) else date.plusDays(1)).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        // A wake with nothing heard leaves an empty record: not worth a row (it is kept, just not listed).
         val matchingRecords = state.records.filter { row ->
+            !(row.source == ConversationSource.NATIVE && row.segments.isEmpty() && row.derived.isEmpty() && !row.processingPending && !row.audioPending &&
+                row.id != state.activeRecord?.id)
+        }.filter { row ->
                 query.isBlank() || row.title.contains(query, true) || row.summary.contains(query, true) ||
                     row.segments.any { it.text.contains(query, true) || state.people.firstOrNull { p -> p.id == it.personId }?.name?.contains(query, true) == true } ||
                     row.memories.any { it.subject.contains(query, true) || it.text.contains(query, true) } ||
@@ -167,10 +176,13 @@ internal fun ConversationScreen(model: AppModel, actions: UiActions, open: (Stri
                             Text(row.title, style = MaterialTheme.typography.titleMedium)
                             Note("${row.source.title} · ${recordTime(row)} · 문장 ${daySegments.size}개")
                             if (row.processingPending) Note("녹음은 저장됨 · 받아 적기 대기 중")
-                            if (row.source == ConversationSource.ALWAYS_ON) daySegments.take(3).forEach { segment ->
-                                Note("${SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(row.timeOf(segment)))} · ${segment.text}")
-                            } else if (row.summary.isNotBlank()) Text(row.summary.take(160))
-                            if (row.summaryStale) Note("화자를 고쳐서 요약을 다시 만들 수 있음")
+                            if (row.source == ConversationSource.ALWAYS_ON && row.sessionId.isNotBlank() && row.sessionId != row.id) Note("깨우기 뒤 같은 세션으로 이어짐")
+                            if (row.summary.isNotBlank()) Text(row.summary.take(160))
+                            // The latest sentences, not the day's first ones.
+                            if (row.source == ConversationSource.ALWAYS_ON) daySegments.takeLast(3).forEach { segment ->
+                                Note("${SimpleDateFormat("HH:mm", Locale.KOREA).format(Date(row.timeOf(segment)))} · ${segment.text}")
+                            }
+                            if (row.summaryStale && row.summary.isNotBlank() && row.id != state.activeRecord?.id) Note("요약 뒤 바뀐 내용이 있음")
                         }
                     }
                 }
@@ -233,7 +245,9 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
                         }
                     }) { Text("'나'로 표시") } },
                     dismissButton = { TextButton(onClick = { confirmSelf = false }) { Text("취소") } })
-                if (state.people.none { it.self && it.samples.isNotEmpty() } && labels.size > 1 && unnamed.isNotEmpty()) OutlinedCard(Modifier.fillMaxWidth()) {
+                // Channel labels (and the bone-conduction "me") are microphones, not voices: marking them all as me would be wrong.
+                val voiceLabels = record.segments.none { it.identityBasis == "channel" || it.identityBasis == "vpu" }
+                if (voiceLabels && state.people.none { it.self && it.samples.isNotEmpty() } && labels.size > 1 && unnamed.isNotEmpty()) OutlinedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("혼자 말했는데 여러 사람으로 나뉘었나요?", style = MaterialTheme.typography.titleSmall)
                         Note("내 목소리를 등록하면 다음 기록부터 '나'로 표시됩니다.")
@@ -244,7 +258,8 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
                     }
                 }
                 if (record.summary.isNotBlank()) Text(record.summary)
-                if (record.summaryStale) Note("화자를 고쳤습니다. '다시 요약'을 누르면 반영됩니다.")
+                if (record.summaryStale && record.summary.isNotBlank() && !(state.running && state.activeRecord?.id == record.id))
+                    Note("요약한 뒤 문장이나 화자가 바뀌었습니다. '다시 요약'을 누르면 반영됩니다.")
                 record.summaries.filter { it.kind != "rolling" }.forEach { summary ->
                     Text(if (summary.kind == "day_end") "${summary.day.ifBlank { "날짜 없음" }} 하루 요약" else "끝난 뒤 요약", style = MaterialTheme.typography.titleSmall)
                     Text(summary.text)
@@ -253,8 +268,10 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         }
-        if (record.derived.isNotEmpty()) item { SectionLabel("분석과 메모") }
-        items(record.derived, key = { "derived:${it.id}" }) { derived ->
+        // AI answers are shown in the timeline at the time they came; other notes stay here.
+        val notes = record.derived.filter { it.kind != "analysis" }
+        if (notes.isNotEmpty()) item { SectionLabel("분석과 메모") }
+        items(notes, key = { "derived:${it.id}" }) { derived ->
             ContentCard {
                 Text(when (derived.kind) { "analysis" -> "분석"; "tags" -> "태그"; else -> "추가 메모" }, style = MaterialTheme.typography.titleSmall)
                 if (derived.text.isNotBlank()) Text(derived.text)
@@ -272,13 +289,15 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
                 }
             }
         }
+        // A session summary on the newest record may quote sentences of the session's earlier records.
+        val sessionSegments = if (record.sessionId.isNotBlank()) state.records.filter { it.sessionId == record.sessionId }.flatMap { it.segments } else record.segments
         if (record.memories.isNotEmpty()) item { SectionLabel("기억할 내용") }
         items(record.memories, key = { it.id }) { memory ->
             OutlinedCard(Modifier.fillMaxWidth().clickable { memoryEdit = memory }) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(listOf(memory.subject.takeUnless { it.isBlank() || it == "null" }, displayLabel(memory.kind)).filterNotNull().joinToString(" · "), style = MaterialTheme.typography.titleSmall)
                     Text(memory.text)
-                    memory.sourceIds.forEach { id -> record.segments.firstOrNull { it.id == id }?.let { source -> Note("“${source.text}”") } }
+                    memory.sourceIds.forEach { id -> sessionSegments.firstOrNull { it.id == id }?.let { source -> Note("“${source.text}”") } }
                 }
             }
         }
@@ -291,10 +310,17 @@ private fun ConversationDetail(model: AppModel, record: ConversationRecord, acti
                 }
             }
         }
-        record.segments.filter { filter == null || it.speaker == filter }.groupBy { localDate(record.timeOf(it)) }.forEach { (day, segments) ->
+        val answers = if (filter == null) record.derived.filter { it.kind == "analysis" && it.text.isNotBlank() } else emptyList()
+        val timeline: List<Pair<Long, Any>> = record.segments.filter { filter == null || it.speaker == filter }.map { record.timeOf(it) to it } +
+            answers.map { it.updatedAt to it }
+        timeline.sortedBy { it.first }.groupBy { localDate(it.first) }.forEach { (day, entries) ->
             item(key = "timeline:$day") { SectionLabel("${day.monthValue}월 ${day.dayOfMonth}일") }
-            items(segments, key = { it.id }) { segment ->
-                SpeechRow(segment, state.people, record) { speakerEdit = segment }
+            items(entries, key = { (_, entry) -> if (entry is SpeechSegment) entry.id else "answer:${(entry as RecordDerived).id}" }) { (time, entry) ->
+                if (entry is SpeechSegment) SpeechRow(entry, state.people, record) { speakerEdit = entry }
+                else ContentCard {
+                    Note("${SimpleDateFormat("HH:mm:ss", Locale.KOREA).format(Date(time))} · AI 답변")
+                    Text((entry as RecordDerived).text)
+                }
             }
         }
     }
@@ -333,6 +359,7 @@ private fun SpeakerBindingDialog(model: AppModel, record: ConversationRecord, se
     AlertDialog(onDismissRequest = dismiss, title = { Text("화자 ${speakerTag(segment.speaker)}") }, text = {
         Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Note(segment.text)
+            if (segment.matchReason.isNotBlank()) Note("판정 근거: ${segment.matchReason}")
             TextButton(onClick = { history = true }) { Text("지난 기록에서 여러 문장 한꺼번에 고치기") }
             Row { Checkbox(all, { all = it }, enabled = byVoice); Text("이 기록에서 같은 목소리 전부") }
             people.forEach { person ->

@@ -34,7 +34,7 @@ internal class ConversationController(private val context: Context, private val 
     private var unknownSentences = 0
     /** Live (realtime) record: the unfinished sentence of a channel, for the live transcript on the glasses. */
     var livePartial: ((Int, String) -> Unit)? = null
-    private val gate = VoiceGate()
+    private val gate = VoiceGate().also { it.onVpu = { slot -> vpuOut?.writeInt(slot) } }
     @Volatile private var gating = false
     /** Writer thread: the phone's own speech detector for always-on gating (others' voices the glasses may not flag). */
     private var phoneVoice: PhoneVoiceDetector? = null
@@ -47,6 +47,10 @@ internal class ConversationController(private val context: Context, private val 
      */
     private var agentSince = 0L
     private val agentBatch = Runnable { drainAgent() }
+    /** Always-on record stopped for a wake or glasses feature: its session id and when, for the record that resumes it. */
+    private var continueSession: Pair<String, Long>? = null
+    /** Writer thread: VPU slots of the always-on recording, kept next to its audio for later re-transcription. */
+    private var vpuOut: java.io.DataOutputStream? = null
     private val preroll = mutableMapOf<Int, ArrayDeque<Pair<Long, FloatArray>>>()
     @Volatile private var gatedTotal = 0L
     @Volatile private var gatedSent = 0L
@@ -126,6 +130,11 @@ internal class ConversationController(private val context: Context, private val 
     /** No speaker engine on this channel: its sentences are labeled by channel (or as the wearer, see [fixedSelf]). */
     private fun fixedChannel(channel: Int) = SpeakerChannelPolicy.channelOnly(record!!.channelPolicy, channel) && state.mode != ConversationMode.ENROLL
     private fun lanes() = 1..(record?.audioChannels ?: 1)
+    /** Setting "vpuSelfShare" in percent; [VPU_SELF_SHARE] by default. */
+    private fun vpuSelfShare() = config.optString("vpuSelfShare").toDoubleOrNull()?.div(100) ?: VPU_SELF_SHARE
+    private fun savedVpu(id: String): IntArray = recordings.vpuFile(id).takeIf { it.exists() }?.let { file ->
+        java.io.DataInputStream(file.inputStream().buffered()).use { input -> IntArray((file.length() / 4).toInt()) { input.readInt() } }
+    } ?: IntArray(0)
     private val maintenance = object : Runnable {
         override fun run() {
             if (state.running && !closing) {
@@ -140,7 +149,7 @@ internal class ConversationController(private val context: Context, private val 
                 if (constraint == null && deferredProcessing && !liveBackfill && savingAudio && captureChannels > 0 && queuedSamples.get() == 0 && System.currentTimeMillis() >= nextBackfillAt && SpeechRounds.ready(context, settings.read())) resumeLive()
                 drainAgent()
             } else if (!closing && state.modelReady) resumePending()
-            scheduleDaySummaries(false); worker.postDelayed(this, 15_000)
+            scheduleDaySummaries(false); sweepSessions(); worker.postDelayed(this, 15_000)
         }
     }
     init { worker.post {
@@ -179,6 +188,10 @@ internal class ConversationController(private val context: Context, private val 
             resamplers = List(2) { ConversationAudio() }; enrollmentTarget = target
             record = ConversationRecord(mode = mode, source = source, audioAnchors = listOf(AudioAnchor(0, System.currentTimeMillis())),
                 channelPolicy = "pending_actual_channels", audioPending = mode != ConversationMode.ENROLL, processingPending = deferredProcessing)
+            // Always-on resumed after a wake or a glasses feature continues the same session (one summary at its end).
+            val resumed = continueSession?.takeIf { source == ConversationSource.ALWAYS_ON && System.currentTimeMillis() - it.second < SESSION_GAP_MS }?.first
+            if (source == ConversationSource.ALWAYS_ON) continueSession = null
+            record = record!!.copy(sessionId = resumed ?: record!!.id)
             savingAudio = mode != ConversationMode.ENROLL
             if (savingAudio) record = repository.save(record!!)
             main.post { if (token == generation && state.running) {
@@ -212,6 +225,7 @@ internal class ConversationController(private val context: Context, private val 
                 if (captureChannels == 0) {
                     captureChannels = count
                     if (savingAudio) recordings.start(record!!.id, count)
+                    vpuOut?.close(); vpuOut = if (savingAudio && gating) java.io.DataOutputStream(java.io.FileOutputStream(recordings.vpuFile(record!!.id), true).buffered()) else null
                     worker.post { if (token == generation) prepareChannels(count) }
                 }
                 check(captureChannels == count) { "같은 기록 안에서 수신 채널이 바뀌었습니다. 기록을 다시 시작하세요" }
@@ -233,7 +247,7 @@ internal class ConversationController(private val context: Context, private val 
                     catch (error: Exception) { if (savingAudio) pauseLive(error.message ?: "음성 처리 보충 대기") else fail(error.message ?: "등록 실패", token) }
                     finally { queuedSamples.addAndGet(-pcm.frames) }
                 }
-                if (System.currentTimeMillis() - lastPublished > 1_000) { lastPublished = System.currentTimeMillis()
+                if (System.currentTimeMillis() - lastPublished > 1_000) { lastPublished = System.currentTimeMillis(); vpuOut?.flush()
                     publish(state.copy(decodedSeconds = samples / 16000.0, voiceGate = gateSummary().ifEmpty { selfGate?.summary().orEmpty() })) }
             } catch (error: Exception) { fail(error.message ?: "원본 오디오 저장 실패", token) }
         }
@@ -350,6 +364,8 @@ internal class ConversationController(private val context: Context, private val 
         const val MONO_TOLERANCE = 8
         /** Always-on: a sentence whose 20 ms frames carry the VPU flag at least this often is the wearer's. */
         const val VPU_SELF_SHARE = 0.3
+        /** Always-on resumes the stopped session when it starts again within this time (wake answers, glasses features). */
+        const val SESSION_GAP_MS = 30 * 60 * 1000L
         /** Always-on: how long sentences collect before the assistant judges them together. */
         const val AGENT_BATCH_MS = 3 * 60 * 1000L
     }
@@ -409,12 +425,12 @@ internal class ConversationController(private val context: Context, private val 
             val self = if (channelSelf) repository.ensureSelf() else null
             val groups = mutableListOf<SpeechSegment>()
             // Always-on: the glasses' bone-conduction flag (VPU) only fires on the wearer's own voice.
-            val vpuShare = if (channelLabel && state.source == ConversationSource.ALWAYS_ON && !replaying) gate.vpuShare(sentence.beginMS, sentence.endMS) else null
+            val vpuShare = if (channelLabel && state.source == ConversationSource.ALWAYS_ON) gate.vpuShare(sentence.beginMS, sentence.endMS) else null
             val precise = !channelLabel && sentence.words.isNotEmpty() && sentence.words.joinToString("") { it.text } == sentence.text && sentence.words.all { it.endMS > it.beginMS }
             val units = if (precise) sentence.words.mapIndexed { i, word -> sentence.copy(id = "${sentence.id}:$i", text = word.text, beginMS = word.beginMS, endMS = word.endMS, words = listOf(word)) } else listOf(sentence)
             units.forEach { unit ->
                 val match = if (channelSelf) SpeakerEngine.Assignment(speaker = "c1:$SELF_SPEAKER", personId = self!!.id, stable = true, reason = "2채널 정책: 채널 1은 기본 본인")
-                    else if (channelLabel) vpuShare?.takeIf { it >= VPU_SELF_SHARE }?.let { share ->
+                    else if (channelLabel) vpuShare?.takeIf { it >= vpuSelfShare() }?.let { share ->
                         SpeakerEngine.Assignment(speaker = "c$channel:$SELF_SPEAKER", personId = repository.ensureSelf().id, stable = true,
                             reason = "골전도(VPU) 표시 ${(share * 100).toInt()}%: 본인")
                     } ?: SpeakerEngine.Assignment(speaker = "c$channel:채널$channel", stable = true,
@@ -461,16 +477,23 @@ internal class ConversationController(private val context: Context, private val 
         publish(state.copy(segments = record!!.segments, records = repository.records, people = repository.people, activeRecord = record))
     }
     private fun drainAgent() {
+        if (pendingAgent.isEmpty() && state.agentDueAt != 0L) publish(state.copy(agentDueAt = 0))
         if (dispatching || pendingAgent.isEmpty() || !state.running) return
         if (state.source == ConversationSource.ALWAYS_ON && !replaying) {
             val wait = agentSince + AGENT_BATCH_MS - android.os.SystemClock.elapsedRealtime()
-            if (wait > 0) { worker.removeCallbacks(agentBatch); worker.postDelayed(agentBatch, wait); return }
+            if (wait > 0) {
+                worker.removeCallbacks(agentBatch); worker.postDelayed(agentBatch, wait)
+                val due = System.currentTimeMillis() + wait
+                if (kotlin.math.abs(state.agentDueAt - due) > 5_000) publish(state.copy(agentDueAt = due))
+                return
+            }
         }
         val input = pendingAgent.toList(); val token = generation; val source = state.source; val contextGeneration = agentContextGeneration
         val payload = modePolicy.input(source, input, repository.people, previous, previousReply).put("recordId", record?.id).put("recordRevision", record?.revision)
         val voice = VoiceRequest(input.joinToString(" ") { it.text }, payload.toString(), source, input.lastOrNull()?.roundId,
             true, record?.id, record?.revision ?: 1, input.any { it.processingMode == "backfill" })
         dispatching = true; val ids = input.map { it.id }.toSet(); pendingAgent.removeAll { it.id in ids }
+        if (state.agentDueAt != 0L) publish(state.copy(agentDueAt = 0))
         main.post {
             val accepted = if (token == generation && contextGeneration == agentContextGeneration) request(voice) else null
             worker.post {
@@ -587,10 +610,18 @@ internal class ConversationController(private val context: Context, private val 
         }
         speakerSentences.clear(); splitSentences = 0; unknownSentences = 0
         replaying = false; pendingSentences.clear(); pendingAgent.clear(); dispatching = false; engines.values.forEach { it.reset() }; manualSpeakers.clear(); closing = false
-        preroll.clear(); worker.removeCallbacks(agentBatch); catchUpVoice?.release(); catchUpVoice = null; writer.post { phoneVoice?.release(); phoneVoice = null }
-        publish(state.copy(running = false, stopping = false, segments = finished?.segments.orEmpty(), activeRecord = null, records = repository.records, status = message))
-        if (finished != null && finished.mode != ConversationMode.ENROLL && !finished.processingPending && finished.segments.isNotEmpty()) { enqueueSummary(finished.id, "record_end"); scheduleDaySummaries(finished.source == ConversationSource.ALWAYS_ON) }
-        val continuation = stopAfter; stopAfter = null; main.post { if (continuation != null) continuation() else stopped() }
+        preroll.clear(); worker.removeCallbacks(agentBatch); catchUpVoice?.release(); catchUpVoice = null; writer.post { phoneVoice?.release(); phoneVoice = null; vpuOut?.close(); vpuOut = null }
+        publish(state.copy(running = false, stopping = false, agentDueAt = 0, segments = finished?.segments.orEmpty(), activeRecord = null, records = repository.records, status = message))
+        val continuation = stopAfter; stopAfter = null
+        // Always-on stopped for a wake or a glasses feature resumes as the same session, summarized when the session ends.
+        val handoff = continuation != null && finished?.source == ConversationSource.ALWAYS_ON
+        if (finished?.source == ConversationSource.ALWAYS_ON) continueSession = if (handoff) finished.sessionId.ifBlank { finished.id } to System.currentTimeMillis() else null
+        if (!handoff && finished != null && finished.mode != ConversationMode.ENROLL && !finished.processingPending) {
+            if (finished.source == ConversationSource.ALWAYS_ON) endSession(finished)
+            else if (finished.segments.isNotEmpty()) enqueueSummary(finished.id, "record_end")
+            scheduleDaySummaries(finished.source == ConversationSource.ALWAYS_ON)
+        }
+        main.post { if (continuation != null) continuation() else stopped() }
     }
     fun saveEnrollment(name: String, self: Boolean, contactUri: String? = null, confirmAllSamples: Boolean = false) { worker.post {
         check(state.running && state.mode == ConversationMode.ENROLL && !closing)
@@ -659,6 +690,34 @@ internal class ConversationController(private val context: Context, private val 
             sources.maxByOrNull { it.createdAt }?.let { enqueueSummary(it.id, "day_end", date) }
         }
     }
+    /** Records one summary covers: the day's always-on records, an always-on session split by wakes, or the record itself. */
+    private fun summarySources(kind: String, target: ConversationRecord, date: String) = when {
+        kind == "day_end" -> repository.records.filter { row -> row.source == ConversationSource.ALWAYS_ON && row.segments.any { day(row.timeOf(it)) == date } }
+        target.source == ConversationSource.ALWAYS_ON && target.sessionId.isNotBlank() -> repository.records.filter { it.sessionId == target.sessionId }.ifEmpty { listOf(target) }
+        else -> listOf(target)
+    }
+    /**
+     * The always-on session of [any] ended: one summary on its newest record, once every record is transcribed
+     * (records stopped for a wake are finished later by backfill, which calls this again).
+     */
+    private fun endSession(any: ConversationRecord) {
+        val sources = summarySources("record_end", any, "")
+        if (sources.any { it.processingPending } || sources.none { it.segments.isNotEmpty() }) return
+        if (continueSession?.first == any.sessionId.ifBlank { any.id }) return
+        enqueueSummary(sources.maxBy { it.createdAt }.id, "record_end")
+    }
+    /** Sessions left without an end summary: always-on was never resumed after a wake, or the app restarted. Once per run. */
+    private val sweptSessions = mutableSetOf<String>()
+    private fun sweepSessions() {
+        val now = System.currentTimeMillis()
+        continueSession?.takeIf { now - it.second >= SESSION_GAP_MS }?.let { continueSession = null }
+        repository.records.filter { it.source == ConversationSource.ALWAYS_ON && it.sessionId.isNotBlank() }.groupBy { it.sessionId }.forEach { (session, rows) ->
+            val newest = rows.maxBy { it.createdAt }
+            if (session in sweptSessions || rows.any { it.id == record?.id } || newest.summaries.any { it.kind == "record_end" }) return@forEach
+            if (now - (newest.endedAt ?: newest.createdAt) < SESSION_GAP_MS) return@forEach
+            sweptSessions += session; endSession(newest)
+        }
+    }
     private fun enqueueSummary(id: String, kind: String, date: String = "") {
         // "기록을 자동으로 요약" off: only the summary button runs one.
         if (kind != "manual" && settings.read().optString("memoryAutoSummary", "true") == "false") return
@@ -669,24 +728,25 @@ internal class ConversationController(private val context: Context, private val 
         if (state.summarizing || summaryJobs.isEmpty()) return
         val (id, kind, date) = summaryJobs.removeFirst()
         val target = repository.records.firstOrNull { it.id == id } ?: return drainSummaries()
-        val sources = if (kind == "day_end") repository.records.filter { row -> row.source == ConversationSource.ALWAYS_ON && row.segments.any { day(row.timeOf(it)) == date } } else listOf(target)
-        val input = if (kind == "day_end") target.copy(segments = sources.flatMap { row -> row.segments.filter { day(row.timeOf(it)) == date } }) else target
-        if (input.segments.isEmpty()) return drainSummaries()
+        val sources = summarySources(kind, target, date)
+        val lines = sources.flatMap { row -> row.segments.filter { kind != "day_end" || day(row.timeOf(it)) == date }.map { row to it } }
+            .sortedBy { (row, segment) -> row.timeOf(segment) }
+        if (lines.isEmpty()) return drainSummaries()
         val versions = sources.associate { it.id to it.segments.map { segment -> segment.json().toString() } }
         val cfg = settings.read(); activeSummary = Triple(id, kind, date); publish(state.copy(summarizing = true))
         inference.execute {
-            val result = runCatching { summarizer.summarize(input, repository.people, cfg) }
+            val result = runCatching { summarizer.summarize(target.mode, lines, repository.people, cfg) }
             worker.post {
                 result.fold({ summarized ->
-                    val currentSources = if (kind == "day_end") repository.records.filter { row -> row.source == ConversationSource.ALWAYS_ON && row.segments.any { day(row.timeOf(it)) == date } }
-                        else repository.records.filter { it.id == id }
+                    val currentSources = repository.records.firstOrNull { it.id == id }?.let { summarySources(kind, it, date) }.orEmpty()
                     val valid = currentSources.map { it.id }.toSet() == versions.keys && versions.all { (recordId, segments) ->
                         repository.records.firstOrNull { it.id == recordId }?.segments?.map { it.json().toString() } == segments }
                     if (valid) repository.records.firstOrNull { it.id == id }?.let { current ->
-                        val snapshot = RecordSummary(kind, summarized.summary, recordIds = sources.map { it.id }, day = date)
+                        val (summaryText, memories) = summarized
+                        val snapshot = RecordSummary(kind, summaryText, recordIds = sources.map { it.id }, day = date)
                         val snapshots = current.summaries.filterNot { kind == "day_end" && it.kind == kind && it.day == date } + snapshot
-                        val updated = if (kind == "day_end") current.copy(summaries = snapshots) else current.copy(summary = summarized.summary,
-                            memories = summarized.memories, summaryStale = false, summaries = snapshots)
+                        val updated = if (kind == "day_end") current.copy(summaries = snapshots) else current.copy(summary = summaryText,
+                            memories = memories, summaryStale = false, summaries = snapshots)
                         val saved = repository.save(updated)
                         if (record?.id == id) record = saved
                     }
@@ -728,6 +788,8 @@ internal class ConversationController(private val context: Context, private val 
             selfGate = selfGateFor(old.source, old.mode, cfg)
             config = cfg; samples = old.audioSamples; roundId = null; replaying = true; replayFailed = false; replayReadComplete = false; deferredProcessing = false; savingAudio = false
             pendingSentences.clear(); pendingAgent.clear(); manualSpeakers.clear(); inputThrough.clear(); record = repository.save(old.copy(processingPending = true))
+            // The wearer's bone-conduction flags recorded live, so a re-transcription labels the wearer the same way.
+            gate.loadVpu(if (old.source == ConversationSource.ALWAYS_ON) savedVpu(old.audioId ?: old.id) else IntArray(0))
             try { beginBackfill(false) }
             catch (error: Exception) { replayFailed = true; deferredProcessing = true; nextBackfillAt = System.currentTimeMillis() + 60_000; fail(error.message ?: "보충 초기화 실패", generation) }
         }
@@ -796,6 +858,10 @@ internal class VoiceGate {
     /** 20 ms slots of this record (sample / [FRAME]) whose frame carried the VPU flag. Writer writes, worker reads. */
     private val vpu = java.util.BitSet()
     private var sample = 0L
+    /** Writer thread: each newly flagged VPU slot, for saving next to the recording. */
+    var onVpu: ((Int) -> Unit)? = null
+    /** Flags saved with a recording, for its re-transcription. */
+    fun loadVpu(slots: IntArray) = synchronized(vpu) { vpu.clear(); slots.forEach { if (it >= 0) vpu.set(it) } }
     // Writer-thread state.
     private var position = 0
     private var open = true
@@ -809,9 +875,10 @@ internal class VoiceGate {
     }
     fun reset() { flags.clear(); position = 0; open = true; hold = 0; total = 0; passed = 0; sample = 0; synchronized(vpu) { vpu.clear() } }
     /** Share of the 20 ms frames in [beginMS, endMS) of the record that the glasses flagged as bone-conducted (wearer) voice. */
-    fun vpuShare(beginMS: Long, endMS: Long): Double {
+    fun vpuShare(beginMS: Long, endMS: Long): Double? {
         val first = (beginMS / 20).toInt(); val last = ((endMS + 19) / 20).toInt().coerceAtLeast(first + 1)
-        return synchronized(vpu) { vpu.get(first, last).cardinality() } / (last - first).toDouble()
+        // No flag at all yet (or none saved): say nothing rather than "0%".
+        return synchronized(vpu) { if (vpu.isEmpty) null else vpu.get(first, last).cardinality() / (last - first).toDouble() }
     }
     /** Thread safe; keeps statistics. */
     fun clearFlags() = flags.clear()
@@ -827,7 +894,7 @@ internal class VoiceGate {
                 if (next == null) open = false
                 else {
                     total++
-                    if (next and VPU != 0) synchronized(vpu) { vpu.set((sample / FRAME).toInt()) }
+                    if (next and VPU != 0) { val slot = (sample / FRAME).toInt(); synchronized(vpu) { vpu.set(slot) }; onVpu?.invoke(slot) }
                     if (next and SPEECH != 0 || flags.asSequence().take(LEAD).any { it and SPEECH != 0 }) hold = HANG
                     open = hold > 0; if (hold > 0) hold--
                     if (open) passed++

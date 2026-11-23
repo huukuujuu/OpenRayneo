@@ -20,7 +20,7 @@ import org.json.JSONObject
 @Composable
 internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
     val drafts = model.formDrafts
-    val voiceKeys = listOf("asrEngine", "asrKey", "asrUrl", "asrModelWake", "asrModelLive", "asrLanguage", "nativeAutoAnswer", "audioChannel", "speakerThreshold", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "nativeIdleCloseSeconds", "answerMaxChars", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded")
+    val voiceKeys = listOf("asrEngine", "asrKey", "asrUrl", "asrModelWake", "asrModelLive", "asrModelBatch", "vpuSelfShare", "asrLanguage", "nativeAutoAnswer", "audioChannel", "speakerThreshold", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "nativeIdleCloseSeconds", "answerMaxChars", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded")
     var error by remember { mutableStateOf<String?>(null) }
     var advanced by rememberSaveable { mutableStateOf(false) }
     fun save() {
@@ -101,14 +101,16 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
             VoiceField(model, "asrUrl", "WSS 주소 (비우면 Bailian 국제)", AppSettings.DEFAULT_ASR_URL)
             VoiceField(model, "asrModelWake", "깨우기용 모델", AsrModels.SHORT)
             VoiceField(model, "asrModelLive", "계속 듣기용 모델 (자막·번역·기록)", AsrModels.STREAMING)
+            VoiceField(model, "asrModelBatch", "종일 기록용 모델 (말소리 구간을 모아서 보냄)", AsrModels.BATCH)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(drafts["asrKeepLoaded"] != "false", { drafts["asrKeepLoaded"] = it.toString() }); Text("휴대폰 인식 모델을 메모리에 계속 올려 두기")
             }
             Note("켜면 깨울 때 기다림이 없지만 메모리를 계속 씁니다(최대 약 700MB).")
-            SectionLabel("누가 말했는지")
+            SectionLabel("목소리 등록")
+            Note("새 기록은 채널 1/2로만 구분합니다(종일 기록은 골전도 표시로 '나'). 아래 값은 목소리 등록과 예전 기록을 다시 받아 적을 때만 씁니다.")
             VoiceField(model, "speakerThreshold", "내 목소리 인정 기준 (0~1, 기본 0.7, 낮출수록 '나'로 잘 잡음)", "0.7")
             VoiceField(model, "audioChannel", "목소리 등록에 쓸 마이크 (1 입가 · 2 바깥)", "1")
-            SectionLabel("실시간 듀얼 마이크")
+            SectionLabel("2채널 기록: 바깥 마이크에서 내 말 지우기 (실시간·종일 기록)")
             GateSlider(drafts, "selfVoiceMarginDb", "본인 판단 기준 (입가 마이크가 더 커야 하는 정도)", 6f, 0f..20f, 19, { if (it < 0.5f) "끔" else "${it.toInt()} dB" },
                 "낮추면 바깥 마이크에서 내 말을 더 많이 지웁니다. 상대 말이 잘리면 올리세요.")
             GateSlider(drafts, "selfVoiceFloorDb", "판단 하한", -50f, -70f..-20f, 9, { "${it.toInt()} dBFS" },
@@ -117,6 +119,8 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
                 "내 말 끝이 상대 말로 남으면 늘리세요.")
             SectionLabel("종일 기록")
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(drafts["glassesVoiceGate"] != "false", { drafts["glassesVoiceGate"] = it.toString() }); Text("종일 기록: 말소리가 들린 구간만 받아 적기 (조용할 때는 인식 비용 없음)") }
+            GateSlider(drafts, "vpuSelfShare", "'나'로 볼 골전도 표시 비율", 30f, 5f..90f, 16, { "${it.toInt()}%" },
+                "문장 구간 중 안경 골전도(VPU)가 켜진 비율이 이 값 이상이면 '나'로 표시합니다. 상대 말이 '나'로 잡히면 올리고, 내 말이 채널로 남으면 내리세요. 기록 상세에서 문장을 누르면 실제 비율이 보입니다.")
             SectionLabel("Hey RayNeo 깨우기")
             VoiceField(model, "nativeIdleCloseSeconds", "말이 없으면 창 닫기까지 초 (0이면 닫지 않음)", DEFAULT_NATIVE_IDLE_CLOSE_SECONDS.toString())
             GateSlider(drafts, "bargeInLevelDb", "답변 끊기 소리 크기", -30f, -60f..-10f, 49, { "${it.toInt()} dBFS" },
