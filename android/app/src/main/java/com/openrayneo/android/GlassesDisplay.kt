@@ -17,6 +17,12 @@ internal class GlassesDisplay(
     /** A caption/prompt frame that is not part of our session, e.g. the glasses menu opening Live captions. */
     private val foreign: (protocol: Int, type: Int, body: JSONObject?) -> Unit,
 ) {
+    /**
+     * Experiment (setting "alwaysOnDual"): the always-on record takes its two-channel audio from the prompt session.
+     * Once the glasses accept it, a temporary layout with is_display=false is sent to hide the page; the reply
+     * (type 8) is logged with the other session signals. Unverified whether audio keeps flowing while hidden.
+     */
+    @Volatile var hidePrompt: () -> Boolean = { false }
     // BLE frames arrive on the GATT thread, SPP frames on main.
     private val foreignSeen = java.util.concurrent.ConcurrentHashMap<String, Int>()
     /** Sessions we closed recently: their late replies are ours, not the glasses opening something. */
@@ -170,6 +176,13 @@ internal class GlassesDisplay(
             audioAccepted = true
             if (active.mode != PageMode.FLASHCARD) signal(active.id, PageSignal.AudioAccepted(active.mode.channels))
             if (generation != receivingGeneration) return
+            if (active.mode == PageMode.PROMPT && hidePrompt()) {
+                val id = sid
+                sessionSignals = 0
+                report("실험: 2채널 종일 기록용 프롬프트 세션을 숨김 (is_display=false 요청)")
+                send(0x17, 7, JSONObject().put("sid", id).put("force", false).put("scope", "temporary")
+                    .put("config", JSONObject().put("is_display", false))) { if (sid == id && it.isFailure) report("실험: 숨김 요청 전송 실패") }
+            }
             if (active.mode == PageMode.NAVIGATION) {
                 signal(active.id, PageSignal.LayoutPending)
                 if (generation != receivingGeneration) return

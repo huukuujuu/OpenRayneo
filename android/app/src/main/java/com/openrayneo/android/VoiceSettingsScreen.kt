@@ -20,7 +20,7 @@ import org.json.JSONObject
 @Composable
 internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
     val drafts = model.formDrafts
-    val voiceKeys = listOf("asrEngine", "asrKey", "asrUrl", "asrModelWake", "asrModelLive", "asrModelBatch", "vpuSelfShare", "asrLanguage", "nativeAutoAnswer", "audioChannel", "speakerThreshold", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "nativeIdleCloseSeconds", "answerMaxChars", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded")
+    val voiceKeys = listOf("asrEngine", "asrKey", "asrUrl", "asrModelWake", "asrModelLive", "asrModelBatch", "vpuSelfShare", "alwaysOnDual", "asrLanguage", "nativeAutoAnswer", "audioChannel", "speakerThreshold", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "nativeIdleCloseSeconds", "answerMaxChars", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded")
     var error by remember { mutableStateOf<String?>(null) }
     var advanced by rememberSaveable { mutableStateOf(false) }
     fun save() {
@@ -119,6 +119,8 @@ internal fun VoiceSettingsScreen(model: AppModel, actions: UiActions) {
                 "내 말 끝이 상대 말로 남으면 늘리세요.")
             SectionLabel("종일 기록")
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(drafts["glassesVoiceGate"] != "false", { drafts["glassesVoiceGate"] = it.toString() }); Text("종일 기록: 말소리가 들린 구간만 받아 적기 (조용할 때는 인식 비용 없음)") }
+            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(drafts["alwaysOnDual"] == "true", { drafts["alwaysOnDual"] = it.toString() }); Text("실험: 종일 기록을 2채널로 받기") }
+            Note("LifeLog는 1채널이라, 켜면 실시간 듀얼 마이크와 같은 안경 세션을 열고 화면 표시를 끄도록 요청해 두 마이크를 받습니다. 골전도 표시는 없습니다. 화면이 보이는지, 깨우기·알림이 되는지, 배터리를 확인해 주세요. 다음 종일 기록 시작부터 적용됩니다.")
             GateSlider(drafts, "vpuSelfShare", "'나'로 볼 골전도 표시 비율", 30f, 5f..90f, 16, { "${it.toInt()}%" },
                 "문장 구간 중 안경 골전도(VPU)가 켜진 비율이 이 값 이상이면 '나'로 표시합니다. 상대 말이 '나'로 잡히면 올리고, 내 말이 채널로 남으면 내리세요. 기록 상세에서 문장을 누르면 실제 비율이 보입니다.")
             SectionLabel("Hey RayNeo 깨우기")

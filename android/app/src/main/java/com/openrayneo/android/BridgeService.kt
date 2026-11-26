@@ -110,6 +110,8 @@ internal class BridgeService : Service() {
     private data class VoiceDelivery(val ref: AnswerRef, val source: ConversationSource, val wakeId: String?)
     private var voiceReply: VoiceDelivery? = null
     private var conversationOwnsDisplay = false
+    /** Experiment: the running always-on record takes two-channel audio from a hidden prompt session, not LifeLog. */
+    @Volatile private var dualCapture = false
     private var resumeAlwaysOn: ConversationMode? = null
     private var notificationText = ""
     private var notificationReadStatus = ""
@@ -240,7 +242,8 @@ internal class BridgeService : Service() {
         audio = PromptAudio { left, right ->
             if (virtualVoice.active) return@PromptAudio
             if (translator.active) translator.accept(left, right)
-            else if (conversations.state.running && conversations.state.source == ConversationSource.REALTIME) conversations.accept(left, right)
+            else if (conversations.state.running && (conversations.state.source == ConversationSource.REALTIME ||
+                    conversations.state.source == ConversationSource.ALWAYS_ON && dualCapture)) conversations.accept(left, right)
         }
         conversations.backfillHold = { translator.active }
         voiceMemo = VoiceMemo(this, conversations.repository, connection::sendFrame, ::onLog) {
@@ -260,6 +263,7 @@ internal class BridgeService : Service() {
                 // The glasses gave up on a request we have not answered yet.
                 if (type == 3 && sid.isNotBlank()) main.post { if (state.offer?.sid == sid) { dispatch(GlassesEvent.ClearOffer(sid, decline = false)); onLog("안경이 시작 요청을 취소함") } }
             })
+        display.hidePrompt = { dualCapture }
         navigation.initialize(this)
         navigation.stop()
         navigation.observers.add(navigationObserver)
@@ -311,8 +315,12 @@ internal class BridgeService : Service() {
                     if (state.offer != null) events.add(GlassesEvent.ClearOffer(null, decline = false))
                 }
                 if (previous.link.phase != LinkPhase.FULL && state.link.phase == LinkPhase.FULL) { content.connected(); widgets.connected(); pushAlertSettings(); teleprompter.connected(); runCatching { deviceSettings.refresh() } }
-                if (previous.session != null && state.session == null && previous.session.mode == PageMode.PROMPT && conversations.state.running && conversations.state.source == ConversationSource.REALTIME && conversationOwnsDisplay &&
+                if (previous.session != null && state.session == null && previous.session.mode == PageMode.PROMPT && conversations.state.running && conversationOwnsDisplay &&
+                    (conversations.state.source == ConversationSource.REALTIME || conversations.state.source == ConversationSource.ALWAYS_ON && dualCapture) &&
                     (state.ownership != DisplayOwnership.APP || state.intent == DisplayIntent.Idle || state.intent == DisplayIntent.Navigation || state.error != null)) {
+                    // Experiment: without its page the dual always-on record gets no audio. Not restarted here, in case
+                    // the glasses close a hidden page every time (it would reopen in a loop).
+                    if (conversations.state.source == ConversationSource.ALWAYS_ON) onLog("실험: 2채널 종일 기록의 프롬프트 세션이 닫혀 기록을 멈춤 (${state.error ?: "화면 주인 변경"})")
                     conversationOwnsDisplay = false; conversations.stop()
                 }
                 // The translator runs only while the glasses show its window; any other page, link loss or yield stops it.
@@ -478,11 +486,16 @@ internal class BridgeService : Service() {
     private val resumeRetry = Runnable { resumeBackground() }
     private fun conversationCapture(source: ConversationSource, start: Boolean) {
         if (start) {
+            dualCapture = false
             when (source) {
                 ConversationSource.REALTIME -> openListening()
                 // Voice memo records are only ever re-transcribed from saved audio, never captured live here.
                 ConversationSource.VOICE_MEMO -> Unit
-                ConversationSource.NATIVE, ConversationSource.ALWAYS_ON -> {
+                ConversationSource.NATIVE, ConversationSource.ALWAYS_ON -> if (source == ConversationSource.ALWAYS_ON && settings.read().optString("alwaysOnDual") == "true") {
+                    dualCapture = true
+                    onLog("실험: 종일 기록을 LifeLog 대신 숨긴 프롬프트 세션의 2채널 오디오로 받음")
+                    openListening()
+                } else {
                     conversationOwnsDisplay = false
                     dispatch(GlassesEvent.PauseDisplay); voiceAudio.start(if (source == ConversationSource.ALWAYS_ON) 2 else 1); voiceTransport.start(source)
                 }
@@ -490,7 +503,8 @@ internal class BridgeService : Service() {
         } else {
             if (source == ConversationSource.NATIVE && voiceTransport.nativeActive) resumeAlwaysOn = null
             agent.harness.cancel("route"); agent.harness.cancel("hint")
-            if (source == ConversationSource.REALTIME) {
+            if (source == ConversationSource.REALTIME || source == ConversationSource.ALWAYS_ON && dualCapture) {
+                dualCapture = false
                 if (conversationOwnsDisplay) dispatch(GlassesEvent.PauseDisplay)
                 conversationOwnsDisplay = false
             } else { voiceAudio.stop(); voiceTransport.stop() }

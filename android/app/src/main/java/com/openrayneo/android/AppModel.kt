@@ -322,7 +322,7 @@ internal class AppModel(application: Application) : AndroidViewModel(application
     companion object {
         val configurationKeys = listOf("modelUrl", "modelName", "modelKey", "mobileAgentBackend", "localAgentPort", "codexUrl", "codexCwd", "codexToken",
             "asrEngine", "asrKey", "asrUrl", "asrModelWake", "asrModelLive", "asrLanguage", "decisionKey", "decisionUrl", "decisionModel", "nativeAutoAnswer", "audioChannel",
-            "speakerThreshold", "voiceRoutingPrompt", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "nativeIdleCloseSeconds", "answerMaxChars", "saveMeetingAudio", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded", "asrModelBatch", "vpuSelfShare")
+            "speakerThreshold", "voiceRoutingPrompt", "memoryPrompt", "memoryAutoSummary", "answerClearSeconds", "nativeIdleCloseSeconds", "answerMaxChars", "saveMeetingAudio", "glassesVoiceGate", "selfVoiceMarginDb", "selfVoiceFloorDb", "selfVoiceHoldMs", "bargeInLevelDb", "bargeInMinMs", "asrKeepLoaded", "asrModelBatch", "vpuSelfShare", "alwaysOnDual")
     }
 
     fun send(source: AnswerSource) = attempt {
